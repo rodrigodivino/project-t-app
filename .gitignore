@@ -4,4 +4,4 @@ materials/
 __pycache__/
 *.pyc
 .coverage
-.env
+**/.env
