@@ -1,0 +1,7 @@
+BACKLOG.md
+materials/
+
+__pycache__/
+*.pyc
+.coverage
+.env
