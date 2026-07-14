@@ -25,4 +25,13 @@ def health() -> dict[str, str]:
 
 
 if STATIC_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+    from fastapi.responses import FileResponse
+
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static-assets")
+
+    @app.get("/{path:path}")
+    def spa_fallback(path: str) -> FileResponse:
+        file = STATIC_DIR / path
+        if file.is_file():
+            return FileResponse(file)
+        return FileResponse(STATIC_DIR / "index.html")
