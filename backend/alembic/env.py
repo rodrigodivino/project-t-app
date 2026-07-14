@@ -3,12 +3,12 @@ from logging.config import fileConfig
 from alembic import context
 
 from app.database import Base, engine
-from app.settings import settings
+from app.settings import DATABASE_URL
 import app.sources.models  # noqa: F401
 import app.workspaces.models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -18,7 +18,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.database_url,
+        url=DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

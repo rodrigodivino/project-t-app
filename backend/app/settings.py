@@ -1,11 +1,8 @@
-from pydantic_settings import BaseSettings
+import os
 
+from dotenv import load_dotenv
 
-class Settings(BaseSettings):
-    database_url: str
-    access_code: str = "dev"
+load_dotenv()
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
-
-
-settings = Settings()
+DATABASE_URL = os.environ["DATABASE_URL"]
+ACCESS_CODE = os.environ.get("ACCESS_CODE", "dev")

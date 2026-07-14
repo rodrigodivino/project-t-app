@@ -1,5 +1,5 @@
-from app.settings import settings
+from app.settings import ACCESS_CODE
 
 
 def verify_code(code: str) -> bool:
-    return code == settings.access_code
+    return code == ACCESS_CODE
