@@ -4,6 +4,7 @@ from alembic import context
 
 from app.database import Base, engine
 from app.settings import DATABASE_URL
+import app.shoebox.models  # noqa: F401
 import app.sources.models  # noqa: F401
 import app.workspaces.models  # noqa: F401
 

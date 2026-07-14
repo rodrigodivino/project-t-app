@@ -1,5 +1,6 @@
 import { Component, EventEmitter, Input, OnInit, Output } from '@angular/core';
 import { SourceDocument, SourcesService } from './sources.service';
+import { ShoeboxService } from './shoebox.service';
 
 @Component({
   selector: 'app-sources-modal',
@@ -51,7 +52,28 @@ import { SourceDocument, SourcesService } from './sources.service';
           <ul class="doc-list">
             @for (doc of documents; track doc.id) {
               <li class="doc-item">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                <button
+                  class="shoebox-toggle"
+                  [class.in-shoebox]="isInShoebox(doc.id)"
+                  (click)="toggleShoebox(doc)"
+                  [attr.aria-label]="isInShoebox(doc.id) ? 'Remover do shoebox' : 'Adicionar ao shoebox'"
+                >
+                  @if (isInShoebox(doc.id)) {
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2.5"
+                         stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  } @else {
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19"/>
+                      <line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                  }
+                </button>
+                <svg class="doc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
                      stroke="currentColor" stroke-width="2"
                      stroke-linecap="round" stroke-linejoin="round">
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -199,7 +221,7 @@ import { SourceDocument, SourcesService } from './sources.service';
       background: var(--color-accent-subtle);
     }
 
-    .doc-item svg {
+    .doc-icon {
       flex-shrink: 0;
       color: var(--color-text-secondary);
     }
@@ -210,6 +232,31 @@ import { SourceDocument, SourcesService } from './sources.service';
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .shoebox-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border: 1.5px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--color-text-secondary);
+      flex-shrink: 0;
+      transition: border-color 0.15s, background 0.15s, color 0.15s;
+    }
+
+    .shoebox-toggle:hover {
+      border-color: var(--color-accent);
+      color: var(--color-accent);
+    }
+
+    .shoebox-toggle.in-shoebox {
+      border-color: var(--color-accent);
+      background: var(--color-accent);
+      color: white;
     }
 
     .delete-btn {
@@ -238,16 +285,39 @@ import { SourceDocument, SourcesService } from './sources.service';
 })
 export class SourcesModal implements OnInit {
   @Input() workspaceId = '';
+  @Input() shoeboxDocIds: Set<string> = new Set();
   @Output() close = new EventEmitter<void>();
+  @Output() shoeboxChanged = new EventEmitter<void>();
 
   documents: SourceDocument[] = [];
   loading = false;
   uploading = false;
 
-  constructor(private sources: SourcesService) {}
+  constructor(
+    private sources: SourcesService,
+    private shoebox: ShoeboxService,
+  ) {}
 
   ngOnInit(): void {
     this.loadDocuments();
+  }
+
+  isInShoebox(docId: string): boolean {
+    return this.shoeboxDocIds.has(docId);
+  }
+
+  toggleShoebox(doc: SourceDocument): void {
+    if (this.isInShoebox(doc.id)) {
+      this.shoebox.remove(this.workspaceId, doc.id).subscribe(() => {
+        this.shoeboxDocIds.delete(doc.id);
+        this.shoeboxChanged.emit();
+      });
+    } else {
+      this.shoebox.add(this.workspaceId, doc.id).subscribe(() => {
+        this.shoeboxDocIds.add(doc.id);
+        this.shoeboxChanged.emit();
+      });
+    }
   }
 
   onFileSelected(event: Event): void {
@@ -271,6 +341,10 @@ export class SourcesModal implements OnInit {
   onDelete(doc: SourceDocument): void {
     this.sources.delete(this.workspaceId, doc.id).subscribe(() => {
       this.documents = this.documents.filter((d) => d.id !== doc.id);
+      if (this.shoeboxDocIds.has(doc.id)) {
+        this.shoeboxDocIds.delete(doc.id);
+        this.shoeboxChanged.emit();
+      }
     });
   }
 
