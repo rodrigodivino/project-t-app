@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth.dependency import require_auth
 from app.database import get_db
 from app.sources.service import (
     delete_document,
@@ -12,7 +13,11 @@ from app.sources.service import (
     upload_document,
 )
 
-router = APIRouter(prefix="/api/workspaces/{ws_id}/sources", tags=["sources"])
+router = APIRouter(
+    prefix="/api/workspaces/{ws_id}/sources",
+    tags=["sources"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 class DocumentOut(BaseModel):

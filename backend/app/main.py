@@ -6,15 +6,20 @@ from sqlalchemy import text
 
 from app.auth.router import router as auth_router
 from app.database import engine
+from app.settings import PRODUCTION
 from app.sources.router import router as sources_router
 from app.workspaces.router import router as workspaces_router
 
-app = FastAPI()
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+app = FastAPI(
+    docs_url=None if PRODUCTION else "/docs",
+    redoc_url=None if PRODUCTION else "/redoc",
+    openapi_url=None if PRODUCTION else "/openapi.json",
+)
 app.include_router(auth_router)
 app.include_router(workspaces_router)
 app.include_router(sources_router)
-
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 @app.get("/api/health")

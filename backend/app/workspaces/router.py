@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth.dependency import require_auth
 from app.database import get_db
 from app.workspaces.service import (
     create_workspace,
@@ -12,7 +13,9 @@ from app.workspaces.service import (
     list_workspaces,
 )
 
-router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
+router = APIRouter(
+    prefix="/api/workspaces", tags=["workspaces"], dependencies=[Depends(require_auth)]
+)
 
 
 class WorkspaceCreate(BaseModel):

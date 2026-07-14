@@ -1,5 +1,11 @@
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import {
+  HttpClient,
+  HttpEvent,
+  HttpHandler,
+  HttpInterceptor,
+  HttpRequest,
+} from '@angular/common/http';
 import { Observable, map, tap } from 'rxjs';
 
 @Injectable({
@@ -7,9 +13,14 @@ import { Observable, map, tap } from 'rxjs';
 })
 export class AuthService {
   private authenticated = false;
+  private code = '';
 
   constructor(private http: HttpClient) {
-    this.authenticated = sessionStorage.getItem('authenticated') === 'true';
+    const stored = sessionStorage.getItem('access_code');
+    if (stored) {
+      this.authenticated = true;
+      this.code = stored;
+    }
   }
 
   verify(code: string): Observable<boolean> {
@@ -20,7 +31,8 @@ export class AuthService {
         tap((valid) => {
           this.authenticated = valid;
           if (valid) {
-            sessionStorage.setItem('authenticated', 'true');
+            this.code = code;
+            sessionStorage.setItem('access_code', code);
           }
         })
       );
@@ -28,5 +40,28 @@ export class AuthService {
 
   isAuthenticated(): boolean {
     return this.authenticated;
+  }
+
+  getCode(): string {
+    return this.code;
+  }
+}
+
+@Injectable()
+export class AuthInterceptor implements HttpInterceptor {
+  constructor(private auth: AuthService) {}
+
+  intercept(
+    req: HttpRequest<unknown>,
+    next: HttpHandler
+  ): Observable<HttpEvent<unknown>> {
+    const code = this.auth.getCode();
+    if (code) {
+      const cloned = req.clone({
+        setHeaders: { Authorization: code },
+      });
+      return next.handle(cloned);
+    }
+    return next.handle(req);
   }
 }

@@ -1,0 +1,18 @@
+.health-dot {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: gray;
+  z-index: 9999;
+
+  &.ok {
+    background: #22c55e;
+  }
+
+  &.error {
+    background: #ef4444;
+  }
+}
