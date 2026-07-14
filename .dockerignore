@@ -1,1 +1,10 @@
-backend/.env
+BACKLOG.md
+materials/
+
+__pycache__/
+*.pyc
+.coverage
+.env
+
+webapp/node_modules/
+webapp/.angular/
