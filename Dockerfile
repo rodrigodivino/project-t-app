@@ -1,7 +1,7 @@
 FROM node:22-slim AS frontend
 WORKDIR /build
 COPY webapp/package.json webapp/package-lock.json ./
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 COPY webapp/ ./
 RUN npx ng build --configuration=production
 
