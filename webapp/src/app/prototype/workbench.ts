@@ -1,47 +1,52 @@
 import { Component, OnInit } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { SourcesModal } from './sources-modal';
-import { SourceDocument, SourcesService } from './sources.service';
 import { ShoeboxItem, ShoeboxService } from './shoebox.service';
-
-interface ShoeboxEntry {
-  item: ShoeboxItem;
-  filename: string;
-}
+import { DocViewer } from './doc-viewer';
 
 @Component({
   selector: 'app-workbench',
-  imports: [SourcesModal],
+  imports: [SourcesModal, DocViewer],
   template: `
     <div class="workbench">
       <header class="workbench-header">
         <h1>Prototype</h1>
-        <button class="sources-btn" (click)="sourcesOpen = true">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-          </svg>
-          Fontes
-        </button>
       </header>
       <div class="workbench-board">
         <section class="board-column">
-          <h2>Shoebox</h2>
+          <h2>Documentos Relevantes</h2>
           <div class="column-body">
-            @if (shoeboxEntries.length === 0) {
-              <p class="placeholder">Selecione documentos nas Fontes</p>
+            <button class="all-docs-btn" (click)="sourcesOpen = true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              Ver Todos os Documentos
+            </button>
+            @if (shoeboxItems.length === 0) {
+              <p class="placeholder">Nenhum documento marcado como relevante</p>
             }
-            @for (entry of shoeboxEntries; track entry.item.id) {
-              <div class="shoebox-card">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2"
-                     stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                </svg>
-                <span class="card-name">{{ entry.filename }}</span>
-                <button class="card-remove" (click)="removeFromShoebox(entry)" aria-label="Remover">
+            @for (item of shoeboxItems; track item.id) {
+              <div class="shoebox-card" (click)="viewDoc(item)">
+                <div class="card-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="1.5"
+                       stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                  </svg>
+                </div>
+                <div class="card-info">
+                  <span class="card-name" [title]="item.filename">{{ item.filename }}</span>
+                </div>
+                <button
+                  class="card-remove"
+                  (click)="removeFromShoebox($event, item)"
+                  aria-label="Remover"
+                >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
                        stroke="currentColor" stroke-width="2.5"
                        stroke-linecap="round" stroke-linejoin="round">
@@ -62,6 +67,16 @@ interface ShoeboxEntry {
         (shoeboxChanged)="loadShoebox()"
         (close)="sourcesOpen = false"
       />
+    }
+    @if (viewingItem) {
+      <div class="doc-modal-backdrop" (click)="viewingItem = null"></div>
+      <div class="doc-modal">
+        <app-doc-viewer
+          [url]="viewingContentUrl"
+          [filename]="viewingItem.filename"
+          (close)="viewingItem = null"
+        />
+      </div>
     }
   `,
   styles: `
@@ -85,90 +100,103 @@ interface ShoeboxEntry {
       font-weight: 600;
     }
 
-    .sources-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 14px;
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-sm);
-      background: var(--color-surface);
-      color: var(--color-text);
-      font-size: 0.875rem;
-      font-weight: 500;
-      transition: border-color 0.15s, box-shadow 0.15s;
-    }
-
-    .sources-btn:hover {
-      border-color: var(--color-border-focus);
-      box-shadow: var(--shadow-sm);
-    }
-
     .workbench-board {
       display: flex;
       flex: 1;
-      gap: 1px;
-      background: var(--color-border);
       overflow-x: auto;
     }
 
     .board-column {
-      flex: 1;
-      min-width: 280px;
-      background: var(--color-bg);
+      width: 300px;
+      flex-shrink: 0;
+      background: var(--color-surface);
+      border-right: 1px solid var(--color-border);
       display: flex;
       flex-direction: column;
     }
 
     .board-column h2 {
-      font-size: 0.8125rem;
+      font-size: 0.75rem;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.06em;
       color: var(--color-text-secondary);
-      padding: 12px 16px;
+      padding: 14px 16px;
       border-bottom: 1px solid var(--color-border);
     }
 
     .column-body {
       flex: 1;
-      padding: 12px;
+      padding: 10px;
       display: flex;
       flex-direction: column;
       gap: 6px;
       overflow-y: auto;
     }
 
+    .all-docs-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 9px 10px;
+      background: var(--color-bg);
+      border: 1px dashed var(--color-border);
+      border-radius: var(--radius-sm);
+      color: var(--color-text-secondary);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+    }
+
+    .all-docs-btn:hover {
+      border-color: var(--color-accent);
+      color: var(--color-accent);
+      box-shadow: var(--shadow-sm);
+    }
+
     .placeholder {
       color: var(--color-text-secondary);
-      font-size: 0.875rem;
-      padding: 4px;
+      font-size: 0.8125rem;
+      padding: 8px 6px;
     }
 
     .shoebox-card {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 10px 12px;
+      gap: 10px;
+      padding: 8px 10px;
       background: var(--color-surface);
-      border: 1px solid var(--color-border);
       border-radius: var(--radius-sm);
-      transition: border-color 0.15s, box-shadow 0.15s;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+      cursor: pointer;
+      transition: box-shadow 0.15s, transform 0.15s;
     }
 
     .shoebox-card:hover {
-      border-color: var(--color-border-focus);
-      box-shadow: var(--shadow-sm);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+      transform: translateY(-1px);
     }
 
-    .shoebox-card svg {
+    .card-icon {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
       color: var(--color-text-secondary);
     }
 
-    .card-name {
+    .card-info {
       flex: 1;
-      font-size: 0.875rem;
+      min-width: 0;
+    }
+
+    .card-name {
+      font-size: 0.8125rem;
+      font-weight: 500;
+      display: block;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -185,6 +213,7 @@ interface ShoeboxEntry {
       background: transparent;
       color: var(--color-text-secondary);
       opacity: 0;
+      flex-shrink: 0;
       transition: opacity 0.15s, color 0.15s, background 0.15s;
     }
 
@@ -196,58 +225,78 @@ interface ShoeboxEntry {
       color: var(--color-error);
       background: var(--color-error-bg);
     }
+
+    .doc-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(15, 23, 42, 0.4);
+    }
+
+    .doc-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 101;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+
+    .doc-modal app-doc-viewer {
+      width: 92%;
+      max-width: 900px;
+      height: 85vh;
+      background: var(--color-surface);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+      pointer-events: auto;
+    }
   `,
 })
 export class Workbench implements OnInit {
   workspaceId = '';
   sourcesOpen = false;
-  shoeboxEntries: ShoeboxEntry[] = [];
+  shoeboxItems: ShoeboxItem[] = [];
   shoeboxDocIds = new Set<string>();
-
-  private allDocuments: SourceDocument[] = [];
+  viewingItem: ShoeboxItem | null = null;
+  viewingContentUrl = '';
 
   constructor(
     private route: ActivatedRoute,
     private shoeboxSvc: ShoeboxService,
-    private sourcesSvc: SourcesService,
   ) {}
 
   ngOnInit(): void {
     this.workspaceId = this.route.snapshot.paramMap.get('id') ?? '';
-    this.loadSources();
+    this.loadShoebox();
+  }
+
+  viewDoc(item: ShoeboxItem): void {
+    this.viewingContentUrl = this.shoeboxSvc.contentUrl(
+      this.workspaceId,
+      item.source_document_id,
+    );
+    this.viewingItem = item;
   }
 
   loadShoebox(): void {
     this.shoeboxSvc.list(this.workspaceId).subscribe((items) => {
       this.shoeboxDocIds = new Set(items.map((i) => i.source_document_id));
-      this.shoeboxEntries = items.map((item) => ({
-        item,
-        filename: this.filenameFor(item.source_document_id),
-      }));
+      this.shoeboxItems = items;
     });
   }
 
-  removeFromShoebox(entry: ShoeboxEntry): void {
+  removeFromShoebox(event: Event, item: ShoeboxItem): void {
+    event.stopPropagation();
     this.shoeboxSvc
-      .remove(this.workspaceId, entry.item.source_document_id)
+      .remove(this.workspaceId, item.source_document_id)
       .subscribe(() => {
-        this.shoeboxDocIds.delete(entry.item.source_document_id);
-        this.shoeboxEntries = this.shoeboxEntries.filter(
-          (e) => e.item.id !== entry.item.id
+        this.shoeboxDocIds.delete(item.source_document_id);
+        this.shoeboxItems = this.shoeboxItems.filter(
+          (i) => i.id !== item.id
         );
       });
-  }
-
-  private loadSources(): void {
-    this.sourcesSvc.list(this.workspaceId).subscribe((docs) => {
-      this.allDocuments = docs;
-      this.loadShoebox();
-    });
-  }
-
-  private filenameFor(docId: string): string {
-    return (
-      this.allDocuments.find((d) => d.id === docId)?.filename ?? 'Documento'
-    );
   }
 }

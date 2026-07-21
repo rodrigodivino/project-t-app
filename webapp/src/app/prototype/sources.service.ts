@@ -34,4 +34,8 @@ export class SourcesService {
       `/api/workspaces/${workspaceId}/sources/${id}`
     );
   }
+
+  contentUrl(workspaceId: string, id: string): string {
+    return `/api/workspaces/${workspaceId}/sources/${id}/content`;
+  }
 }

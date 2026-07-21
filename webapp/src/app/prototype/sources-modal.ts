@@ -1,98 +1,128 @@
 import { Component, EventEmitter, Input, OnInit, Output } from '@angular/core';
 import { SourceDocument, SourcesService } from './sources.service';
 import { ShoeboxService } from './shoebox.service';
+import { DocViewer } from './doc-viewer';
 
 @Component({
   selector: 'app-sources-modal',
+  imports: [DocViewer],
   template: `
     <div class="backdrop" (click)="close.emit()"></div>
     <div class="modal">
-      <header class="modal-header">
-        <h2>Fontes externas</h2>
-        <button class="close-btn" (click)="close.emit()" aria-label="Fechar">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-      </header>
-      <div class="modal-body">
-        <div class="upload-area">
-          <input
-            #fileInput
-            type="file"
-            (change)="onFileSelected($event)"
-            hidden
-          />
-          <button class="upload-btn" (click)="fileInput.click()" [disabled]="uploading">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2"
-                 stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            {{ uploading ? 'Enviando...' : 'Enviar documento' }}
-          </button>
-        </div>
-        @if (documents.length === 0 && !loading) {
-          <div class="empty-state">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="1.5"
-                 stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-            </svg>
-            <p>Nenhum documento adicionado</p>
+      @if (viewingDoc) {
+        <app-doc-viewer
+          [url]="viewingUrl"
+          [filename]="viewingDoc.filename"
+          (close)="viewingDoc = null"
+        />
+      } @else {
+        <header class="modal-header">
+          <h2>Todos os Documentos</h2>
+          <div class="header-actions">
+            <input
+              #fileInput
+              type="file"
+              accept=".md,text/markdown"
+              (change)="onFileSelected($event)"
+              hidden
+            />
+            <button class="upload-btn" (click)="fileInput.click()" [disabled]="uploading">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              {{ uploading ? 'Enviando...' : 'Enviar' }}
+            </button>
+            <button class="close-btn" (click)="close.emit()" aria-label="Fechar">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
           </div>
-        }
-        @if (documents.length > 0) {
-          <ul class="doc-list">
-            @for (doc of documents; track doc.id) {
-              <li class="doc-item">
-                <button
-                  class="shoebox-toggle"
-                  [class.in-shoebox]="isInShoebox(doc.id)"
-                  (click)="toggleShoebox(doc)"
-                  [attr.aria-label]="isInShoebox(doc.id) ? 'Remover do shoebox' : 'Adicionar ao shoebox'"
-                >
+        </header>
+        <div class="modal-body">
+          @if (documents.length === 0 && !loading) {
+            <div class="empty-state">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="1.5"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+              </svg>
+              <p>Nenhum documento adicionado</p>
+            </div>
+          }
+          @if (documents.length > 0) {
+            <div class="doc-grid">
+              @for (doc of documents; track doc.id) {
+                <div class="doc-card" [class.in-shoebox]="isInShoebox(doc.id)">
                   @if (isInShoebox(doc.id)) {
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                         stroke="currentColor" stroke-width="2.5"
-                         stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="20 6 9 17 4 12"/>
-                    </svg>
-                  } @else {
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                         stroke="currentColor" stroke-width="2"
-                         stroke-linecap="round" stroke-linejoin="round">
-                      <line x1="12" y1="5" x2="12" y2="19"/>
-                      <line x1="5" y1="12" x2="19" y2="12"/>
-                    </svg>
+                    <div class="shoebox-badge">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="3"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
                   }
-                </button>
-                <svg class="doc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2"
-                     stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                </svg>
-                <span class="doc-name">{{ doc.filename }}</span>
-                <button class="delete-btn" (click)="onDelete(doc)" aria-label="Remover">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                       stroke="currentColor" stroke-width="2"
-                       stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="3 6 5 6 21 6"/>
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                  </svg>
-                </button>
-              </li>
-            }
-          </ul>
-        }
-      </div>
+                  <div class="card-icon">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="1.5"
+                         stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                      <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                  </div>
+                  <div class="card-footer">
+                    <span class="card-name" [title]="doc.filename">{{ doc.filename }}</span>
+                  </div>
+                  <div class="card-overlay">
+                    <button class="action-btn view-btn" (click)="onView(doc)">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="2"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                      Ver
+                    </button>
+                    <button
+                      class="action-btn relevance-btn"
+                      [disabled]="isInShoebox(doc.id)"
+                      (click)="addToShoebox(doc)"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="2"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                      {{ isInShoebox(doc.id) ? 'Marcado' : 'Marcar Relevante' }}
+                    </button>
+                    <button class="action-btn delete-action" (click)="onDelete(doc)">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="2"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                      </svg>
+                      Excluir
+                    </button>
+                  </div>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      }
     </div>
   `,
   styles: `
@@ -113,9 +143,9 @@ import { ShoeboxService } from './shoebox.service';
 
     .modal {
       position: relative;
-      width: 90%;
-      max-width: 560px;
-      max-height: 80vh;
+      width: 92%;
+      max-width: 900px;
+      height: 85vh;
       background: var(--color-surface);
       border-radius: var(--radius-lg);
       box-shadow: var(--shadow-lg);
@@ -128,13 +158,43 @@ import { ShoeboxService } from './shoebox.service';
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 20px 24px;
+      padding: 16px 20px;
       border-bottom: 1px solid var(--color-border);
+      flex-shrink: 0;
     }
 
     .modal-header h2 {
       font-size: 1.125rem;
       font-weight: 600;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .upload-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: var(--color-accent);
+      color: white;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+
+    .upload-btn:hover:not(:disabled) {
+      background: var(--color-accent-hover);
+    }
+
+    .upload-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
 
     .close-btn {
@@ -158,34 +218,7 @@ import { ShoeboxService } from './shoebox.service';
     .modal-body {
       flex: 1;
       overflow-y: auto;
-      padding: 24px;
-    }
-
-    .upload-area {
-      margin-bottom: 16px;
-    }
-
-    .upload-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 16px;
-      background: var(--color-accent);
-      color: white;
-      border: none;
-      border-radius: var(--radius-sm);
-      font-size: 0.875rem;
-      font-weight: 500;
-      transition: background 0.15s;
-    }
-
-    .upload-btn:hover:not(:disabled) {
-      background: var(--color-accent-hover);
-    }
-
-    .upload-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
+      padding: 20px;
     }
 
     .empty-state {
@@ -201,85 +234,133 @@ import { ShoeboxService } from './shoebox.service';
       font-size: 0.9375rem;
     }
 
-    .doc-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
+    .doc-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 16px;
     }
 
-    .doc-item {
+    .doc-card {
+      position: relative;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+      transition: box-shadow 0.15s, transform 0.15s;
+    }
+
+    .doc-card:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      transform: translateY(-2px);
+    }
+
+    .doc-card.in-shoebox {
+      border-color: #22c55e;
+    }
+
+    .shoebox-badge {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 22px;
+      height: 22px;
+      background: #22c55e;
+      color: white;
+      border-radius: 50%;
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 10px 12px;
-      border-radius: var(--radius-sm);
-      transition: background 0.1s;
+      justify-content: center;
+      z-index: 2;
     }
 
-    .doc-item:hover {
-      background: var(--color-accent-subtle);
-    }
-
-    .doc-icon {
-      flex-shrink: 0;
+    .card-icon {
+      aspect-ratio: 4 / 3;
+      background: var(--color-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
       color: var(--color-text-secondary);
     }
 
-    .doc-name {
-      flex: 1;
-      font-size: 0.9375rem;
+    .card-footer {
+      padding: 10px 12px;
+      border-top: 1px solid var(--color-border);
+    }
+
+    .card-name {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--color-text);
+      display: block;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .shoebox-toggle {
+    .card-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.7);
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      width: 28px;
-      height: 28px;
-      border: 1.5px solid var(--color-border);
-      border-radius: var(--radius-sm);
-      background: transparent;
-      color: var(--color-text-secondary);
-      flex-shrink: 0;
-      transition: border-color 0.15s, background 0.15s, color 0.15s;
-    }
-
-    .shoebox-toggle:hover {
-      border-color: var(--color-accent);
-      color: var(--color-accent);
-    }
-
-    .shoebox-toggle.in-shoebox {
-      border-color: var(--color-accent);
-      background: var(--color-accent);
-      color: white;
-    }
-
-    .delete-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 28px;
-      height: 28px;
-      border: none;
-      border-radius: var(--radius-sm);
-      background: transparent;
-      color: var(--color-text-secondary);
+      gap: 6px;
+      padding: 12px;
       opacity: 0;
-      transition: opacity 0.15s, color 0.15s, background 0.15s;
+      transition: opacity 0.15s;
     }
 
-    .doc-item:hover .delete-btn {
+    .doc-card:hover .card-overlay {
       opacity: 1;
     }
 
-    .delete-btn:hover {
-      color: var(--color-error);
-      background: var(--color-error-bg);
+    .action-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      padding: 7px 12px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .view-btn {
+      background: white;
+      color: var(--color-text);
+    }
+
+    .view-btn:hover {
+      background: #f0f0f0;
+    }
+
+    .relevance-btn {
+      background: #22c55e;
+      color: white;
+    }
+
+    .relevance-btn:hover:not(:disabled) {
+      background: #16a34a;
+    }
+
+    .relevance-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .delete-action {
+      background: transparent;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .delete-action:hover {
+      color: #fca5a5;
+      background: rgba(220, 38, 38, 0.2);
     }
   `,
 })
@@ -292,6 +373,8 @@ export class SourcesModal implements OnInit {
   documents: SourceDocument[] = [];
   loading = false;
   uploading = false;
+  viewingDoc: SourceDocument | null = null;
+  viewingUrl = '';
 
   constructor(
     private sources: SourcesService,
@@ -306,18 +389,17 @@ export class SourcesModal implements OnInit {
     return this.shoeboxDocIds.has(docId);
   }
 
-  toggleShoebox(doc: SourceDocument): void {
-    if (this.isInShoebox(doc.id)) {
-      this.shoebox.remove(this.workspaceId, doc.id).subscribe(() => {
-        this.shoeboxDocIds.delete(doc.id);
-        this.shoeboxChanged.emit();
-      });
-    } else {
-      this.shoebox.add(this.workspaceId, doc.id).subscribe(() => {
-        this.shoeboxDocIds.add(doc.id);
-        this.shoeboxChanged.emit();
-      });
-    }
+  onView(doc: SourceDocument): void {
+    this.viewingUrl = this.sources.contentUrl(this.workspaceId, doc.id);
+    this.viewingDoc = doc;
+  }
+
+  addToShoebox(doc: SourceDocument): void {
+    if (this.isInShoebox(doc.id)) return;
+    this.shoebox.add(this.workspaceId, doc.id).subscribe(() => {
+      this.shoeboxDocIds.add(doc.id);
+      this.shoeboxChanged.emit();
+    });
   }
 
   onFileSelected(event: Event): void {

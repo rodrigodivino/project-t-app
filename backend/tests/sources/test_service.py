@@ -14,9 +14,9 @@ def _make_doc(**overrides):
     defaults = {
         "id": uuid.uuid4(),
         "workspace_id": uuid.uuid4(),
-        "filename": "test.pdf",
-        "content": b"fake-pdf-bytes",
-        "content_type": "application/pdf",
+        "filename": "test.md",
+        "content": b"# Hello",
+        "content_type": "text/markdown",
     }
     defaults.update(overrides)
     doc = MagicMock(spec=SourceDocument)
@@ -28,18 +28,18 @@ def _make_doc(**overrides):
 def test_upload_document():
     db = MagicMock()
     ws_id = uuid.uuid4()
-    doc = upload_document(db, ws_id, "report.pdf", b"data", "application/pdf")
+    doc = upload_document(db, ws_id, "report.md", b"# data", "text/markdown")
     db.add.assert_called_once()
     db.commit.assert_called_once()
     db.refresh.assert_called_once()
-    assert doc.filename == "report.pdf"
+    assert doc.filename == "report.md"
     assert doc.workspace_id == ws_id
 
 
 def test_list_documents():
     db = MagicMock()
     ws_id = uuid.uuid4()
-    docs = [_make_doc(), _make_doc(filename="other.pdf")]
+    docs = [_make_doc(), _make_doc(filename="other.md")]
     db.query.return_value.filter.return_value.order_by.return_value.all.return_value = (
         docs
     )

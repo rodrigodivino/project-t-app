@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -36,9 +37,9 @@ async def upload(
     doc = upload_document(
         db,
         workspace_id=ws_id,
-        filename=file.filename or "untitled",
+        filename=file.filename or "untitled.md",
         content=content,
-        content_type=file.content_type or "application/octet-stream",
+        content_type="text/markdown",
     )
     return DocumentOut.model_validate(doc)
 
@@ -59,6 +60,20 @@ def get_one(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return DocumentOut.model_validate(doc)
+
+
+@router.get("/{doc_id}/content")
+def get_content(
+    ws_id: uuid.UUID, doc_id: uuid.UUID, db: Session = Depends(get_db)
+) -> Response:
+    doc = get_document(db, doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return Response(
+        content=doc.content,
+        media_type=doc.content_type,
+        headers={"Content-Disposition": f'inline; filename="{doc.filename}"'},
+    )
 
 
 @router.delete("/{doc_id}", status_code=204)

@@ -5,6 +5,7 @@ import { Observable } from 'rxjs';
 export interface ShoeboxItem {
   id: string;
   source_document_id: string;
+  filename: string;
 }
 
 @Injectable({
@@ -30,5 +31,9 @@ export class ShoeboxService {
     return this.http.delete<void>(
       `/api/workspaces/${workspaceId}/shoebox/${sourceDocumentId}`
     );
+  }
+
+  contentUrl(workspaceId: string, sourceDocumentId: string): string {
+    return `/api/workspaces/${workspaceId}/shoebox/${sourceDocumentId}/content`;
   }
 }
