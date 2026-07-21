@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from app.sources.service import seed_workspace
 from app.workspaces.models import Workspace
 
 
@@ -10,6 +11,7 @@ def create_workspace(db: Session, name: str) -> Workspace:
     db.add(ws)
     db.commit()
     db.refresh(ws)
+    seed_workspace(db, ws.id)
     return ws
 
 

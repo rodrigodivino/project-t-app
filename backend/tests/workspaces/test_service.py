@@ -22,8 +22,8 @@ def _make_ws(**overrides):
 def test_create_workspace():
     db = MagicMock()
     ws = create_workspace(db, "Test")
-    db.add.assert_called_once()
-    db.commit.assert_called_once()
+    assert db.add.call_count == 106
+    assert db.commit.call_count == 2
     db.refresh.assert_called_once()
     assert ws.name == "Test"
 

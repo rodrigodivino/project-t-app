@@ -1,8 +1,25 @@
 import uuid
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from app.sources.models import SourceDocument
+
+SEED_DIR = Path(__file__).resolve().parents[3] / "materials" / "external_data_source" / "st_himark"
+
+
+def seed_workspace(db: Session, workspace_id: uuid.UUID) -> None:
+    if not SEED_DIR.is_dir():
+        return
+    for md_file in sorted(SEED_DIR.glob("*.md")):
+        doc = SourceDocument(
+            workspace_id=workspace_id,
+            filename=md_file.name,
+            content=md_file.read_bytes(),
+            content_type="text/markdown",
+        )
+        db.add(doc)
+    db.commit()
 
 
 def upload_document(
