@@ -2,10 +2,21 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 
-export interface ShoeboxItem {
+export interface ShoeboxItemSummary {
   id: string;
-  source_document_id: string;
-  filename: string;
+  query: string;
+  explanation: string;
+  ai_authored: boolean;
+  added_at: string;
+}
+
+export interface ShoeboxItemFull {
+  id: string;
+  query: string;
+  explanation: string;
+  result: Record<string, any>[];
+  ai_authored: boolean;
+  added_at: string;
 }
 
 @Injectable({
@@ -14,26 +25,33 @@ export interface ShoeboxItem {
 export class ShoeboxService {
   constructor(private http: HttpClient) {}
 
-  list(workspaceId: string): Observable<ShoeboxItem[]> {
-    return this.http.get<ShoeboxItem[]>(
+  list(workspaceId: string): Observable<ShoeboxItemSummary[]> {
+    return this.http.get<ShoeboxItemSummary[]>(
       `/api/workspaces/${workspaceId}/shoebox`
     );
   }
 
-  add(workspaceId: string, sourceDocumentId: string): Observable<ShoeboxItem> {
-    return this.http.post<ShoeboxItem>(
+  get(workspaceId: string, itemId: string): Observable<ShoeboxItemFull> {
+    return this.http.get<ShoeboxItemFull>(
+      `/api/workspaces/${workspaceId}/shoebox/${itemId}`
+    );
+  }
+
+  add(
+    workspaceId: string,
+    query: string,
+    explanation: string,
+    result: Record<string, any>[]
+  ): Observable<ShoeboxItemFull> {
+    return this.http.post<ShoeboxItemFull>(
       `/api/workspaces/${workspaceId}/shoebox`,
-      { source_document_id: sourceDocumentId }
+      { query, explanation, result }
     );
   }
 
-  remove(workspaceId: string, sourceDocumentId: string): Observable<void> {
+  remove(workspaceId: string, itemId: string): Observable<void> {
     return this.http.delete<void>(
-      `/api/workspaces/${workspaceId}/shoebox/${sourceDocumentId}`
+      `/api/workspaces/${workspaceId}/shoebox/${itemId}`
     );
-  }
-
-  contentUrl(workspaceId: string, sourceDocumentId: string): string {
-    return `/api/workspaces/${workspaceId}/shoebox/${sourceDocumentId}/content`;
   }
 }

@@ -6,6 +6,8 @@ from sqlalchemy import text
 
 from app.auth.router import router as auth_router
 from app.database import engine
+from app.evidence.router import router as evidence_router
+from app.schematization.router import router as schematization_router
 from app.settings import PRODUCTION
 from app.shoebox.router import router as shoebox_router
 from app.sources.router import router as sources_router
@@ -22,6 +24,8 @@ app.include_router(auth_router)
 app.include_router(workspaces_router)
 app.include_router(sources_router)
 app.include_router(shoebox_router)
+app.include_router(evidence_router)
+app.include_router(schematization_router)
 
 
 @app.get("/api/health")

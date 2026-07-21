@@ -1,76 +1,30 @@
-import uuid
+import pytest
 from unittest.mock import MagicMock
 
-from app.sources.models import SourceDocument
-from app.sources.service import (
-    delete_document,
-    get_document,
-    list_documents,
-    upload_document,
-)
+from app.sources.service import execute_query
 
 
-def _make_doc(**overrides):
-    defaults = {
-        "id": uuid.uuid4(),
-        "workspace_id": uuid.uuid4(),
-        "filename": "test.md",
-        "content": b"# Hello",
-        "content_type": "text/markdown",
-    }
-    defaults.update(overrides)
-    doc = MagicMock(spec=SourceDocument)
-    for k, v in defaults.items():
-        setattr(doc, k, v)
-    return doc
-
-
-def test_upload_document():
+def test_execute_query_rejects_non_select():
     db = MagicMock()
-    ws_id = uuid.uuid4()
-    doc = upload_document(db, ws_id, "report.md", b"# data", "text/markdown")
-    db.add.assert_called_once()
-    db.commit.assert_called_once()
-    db.refresh.assert_called_once()
-    assert doc.filename == "report.md"
-    assert doc.workspace_id == ws_id
+    with pytest.raises(ValueError, match="Only SELECT"):
+        execute_query(db, "DELETE FROM post_rede_social_himark")
 
 
-def test_list_documents():
+def test_execute_query_rejects_insert():
     db = MagicMock()
-    ws_id = uuid.uuid4()
-    docs = [_make_doc(), _make_doc(filename="other.md")]
-    db.query.return_value.filter.return_value.order_by.return_value.all.return_value = (
-        docs
-    )
-    result = list_documents(db, ws_id)
-    assert len(result) == 2
+    with pytest.raises(ValueError, match="Only SELECT"):
+        execute_query(db, "INSERT INTO post_rede_social_himark VALUES (1, 'a', 'b', 'c', 'd')")
 
 
-def test_get_document_found():
+def test_execute_query_runs_select():
     db = MagicMock()
-    doc = _make_doc()
-    db.get.return_value = doc
-    assert get_document(db, doc.id) is doc
-
-
-def test_get_document_not_found():
-    db = MagicMock()
-    db.get.return_value = None
-    assert get_document(db, uuid.uuid4()) is None
-
-
-def test_delete_document_found():
-    db = MagicMock()
-    doc = _make_doc()
-    db.get.return_value = doc
-    assert delete_document(db, doc.id) is True
-    db.delete.assert_called_once_with(doc)
-    db.commit.assert_called_once()
-
-
-def test_delete_document_not_found():
-    db = MagicMock()
-    db.get.return_value = None
-    assert delete_document(db, uuid.uuid4()) is False
-    db.delete.assert_not_called()
+    mock_result = MagicMock()
+    mock_result.keys.return_value = ["time", "location", "account", "message"]
+    mock_result.fetchall.return_value = [
+        ("2020-04-06", "Broadview", "user1", "hello"),
+    ]
+    db.execute.return_value = mock_result
+    rows = execute_query(db, "SELECT * FROM post_rede_social_himark LIMIT 1")
+    assert len(rows) == 1
+    assert rows[0]["location"] == "Broadview"
+    assert rows[0]["message"] == "hello"

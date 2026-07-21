@@ -1,4 +1,4 @@
-import { SourcesService, SourceDocument } from './sources.service';
+import { SourcesService } from './sources.service';
 import { of } from 'rxjs';
 
 function mockHttp() {
@@ -12,48 +12,17 @@ function mockHttp() {
 const WS = 'ws-123';
 
 describe('SourcesService', () => {
-  it('list calls GET /api/workspaces/:id/sources', (done) => {
+  it('query sends POST to /api/workspaces/:id/sources/query', (done) => {
     const http = mockHttp();
-    const docs: SourceDocument[] = [
-      { id: '1', filename: 'a.pdf', content_type: 'application/pdf' },
-    ];
-    http.get.mockReturnValue(of(docs));
+    const rows = [{ time: '2020-04-06', location: 'Broadview', account: 'user1', message: 'hello' }];
+    http.post.mockReturnValue(of(rows));
     const svc = new SourcesService(http as any);
-    svc.list(WS).subscribe((result) => {
-      expect(http.get).toHaveBeenCalledWith(`/api/workspaces/${WS}/sources`);
-      expect(result).toEqual(docs);
-      done();
-    });
-  });
-
-  it('upload sends FormData to POST /api/workspaces/:id/sources', (done) => {
-    const http = mockHttp();
-    const doc: SourceDocument = {
-      id: '2',
-      filename: 'b.pdf',
-      content_type: 'application/pdf',
-    };
-    http.post.mockReturnValue(of(doc));
-    const svc = new SourcesService(http as any);
-    const file = new File(['content'], 'b.pdf', { type: 'application/pdf' });
-    svc.upload(WS, file).subscribe((result) => {
+    svc.query(WS, 'SELECT * FROM post_rede_social_himark LIMIT 1').subscribe((result) => {
       expect(http.post).toHaveBeenCalledWith(
-        `/api/workspaces/${WS}/sources`,
-        expect.any(FormData)
+        `/api/workspaces/${WS}/sources/query`,
+        { query: 'SELECT * FROM post_rede_social_himark LIMIT 1' }
       );
-      expect(result).toEqual(doc);
-      done();
-    });
-  });
-
-  it('delete calls DELETE /api/workspaces/:id/sources/:docId', (done) => {
-    const http = mockHttp();
-    http.delete.mockReturnValue(of(undefined));
-    const svc = new SourcesService(http as any);
-    svc.delete(WS, 'abc').subscribe(() => {
-      expect(http.delete).toHaveBeenCalledWith(
-        `/api/workspaces/${WS}/sources/abc`
-      );
+      expect(result).toEqual(rows);
       done();
     });
   });

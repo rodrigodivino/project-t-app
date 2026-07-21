@@ -1,5 +1,5 @@
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.workspaces.models import Workspace
 from app.workspaces.service import (
@@ -19,13 +19,15 @@ def _make_ws(**overrides):
     return ws
 
 
-def test_create_workspace():
+@patch("app.workspaces.service._seed_workspace")
+def test_create_workspace(mock_seed):
     db = MagicMock()
     ws = create_workspace(db, "Test")
-    assert db.add.call_count == 106
-    assert db.commit.call_count == 2
+    assert db.add.call_count == 1
+    assert db.commit.call_count == 1
     db.refresh.assert_called_once()
     assert ws.name == "Test"
+    mock_seed.assert_called_once()
 
 
 def test_list_workspaces():

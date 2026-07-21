@@ -1,128 +1,91 @@
-import { Component, EventEmitter, Input, OnInit, Output } from '@angular/core';
-import { SourceDocument, SourcesService } from './sources.service';
+import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { SourcesService } from './sources.service';
 import { ShoeboxService } from './shoebox.service';
-import { DocViewer } from './doc-viewer';
 
 @Component({
   selector: 'app-sources-modal',
-  imports: [DocViewer],
+  imports: [FormsModule],
   template: `
     <div class="backdrop" (click)="close.emit()"></div>
     <div class="modal">
-      @if (viewingDoc) {
-        <app-doc-viewer
-          [url]="viewingUrl"
-          [filename]="viewingDoc.filename"
-          (close)="viewingDoc = null"
-        />
-      } @else {
-        <header class="modal-header">
-          <h2>Todos os Documentos</h2>
-          <div class="header-actions">
-            <input
-              #fileInput
-              type="file"
-              accept=".md,text/markdown"
-              (change)="onFileSelected($event)"
-              hidden
-            />
-            <button class="upload-btn" (click)="fileInput.click()" [disabled]="uploading">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                   stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              {{ uploading ? 'Enviando...' : 'Enviar' }}
-            </button>
-            <button class="close-btn" (click)="close.emit()" aria-label="Fechar">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                   stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
+      <header class="modal-header">
+        <h2>Consultar Base de Dados</h2>
+        <button class="close-btn" (click)="close.emit()" aria-label="Fechar">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </header>
+      <div class="modal-body">
+        <div class="query-section">
+          <div class="schema-box">
+            <div class="schema-title">Tabela <code>post_rede_social_himark</code></div>
+            <div class="schema-desc">Posts de redes sociais da cidade de St. Himark, coletados entre 6 e 10 de abril de 2020.</div>
+            <table class="schema-table">
+              <thead><tr><th>Coluna</th><th>Tipo</th><th>Conteúdo</th></tr></thead>
+              <tbody>
+                <tr><td><code>time</code></td><td>TIMESTAMP</td><td>Data e hora do post</td></tr>
+                <tr><td><code>location</code></td><td>TEXT</td><td>Distrito de origem do post</td></tr>
+                <tr><td><code>account</code></td><td>TEXT</td><td>Nome de usuário do autor</td></tr>
+                <tr><td><code>message</code></td><td>TEXT</td><td>Texto do post</td></tr>
+              </tbody>
+            </table>
           </div>
-        </header>
-        <div class="modal-body">
-          @if (documents.length === 0 && !loading) {
-            <div class="empty-state">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
-                   stroke="currentColor" stroke-width="1.5"
-                   stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                <polyline points="14 2 14 8 20 8"/>
-              </svg>
-              <p>Nenhum documento adicionado</p>
-            </div>
-          }
-          @if (documents.length > 0) {
-            <div class="doc-grid">
-              @for (doc of documents; track doc.id) {
-                <div class="doc-card" [class.in-shoebox]="isInShoebox(doc.id)">
-                  @if (isInShoebox(doc.id)) {
-                    <div class="shoebox-badge">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                           stroke="currentColor" stroke-width="3"
-                           stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="20 6 9 17 4 12"/>
-                      </svg>
-                    </div>
-                  }
-                  <div class="card-icon">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none"
-                         stroke="currentColor" stroke-width="1.5"
-                         stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                      <polyline points="14 2 14 8 20 8"/>
-                      <line x1="16" y1="13" x2="8" y2="13"/>
-                      <line x1="16" y1="17" x2="8" y2="17"/>
-                      <polyline points="10 9 9 9 8 9"/>
-                    </svg>
-                  </div>
-                  <div class="card-footer">
-                    <span class="card-name" [title]="doc.filename">{{ doc.filename }}</span>
-                  </div>
-                  <div class="card-overlay">
-                    <button class="action-btn view-btn" (click)="onView(doc)">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                           stroke="currentColor" stroke-width="2"
-                           stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                        <circle cx="12" cy="12" r="3"/>
-                      </svg>
-                      Ver
-                    </button>
-                    <button
-                      class="action-btn relevance-btn"
-                      [disabled]="isInShoebox(doc.id)"
-                      (click)="addToShoebox(doc)"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                           stroke="currentColor" stroke-width="2"
-                           stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="20 6 9 17 4 12"/>
-                      </svg>
-                      {{ isInShoebox(doc.id) ? 'Marcado' : 'Marcar Relevante' }}
-                    </button>
-                    <button class="action-btn delete-action" (click)="onDelete(doc)">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                           stroke="currentColor" stroke-width="2"
-                           stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="3 6 5 6 21 6"/>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                      </svg>
-                      Excluir
-                    </button>
-                  </div>
-                </div>
-              }
-            </div>
-          }
+          <label for="sql-input">Consulta SQL</label>
+          <textarea
+            id="sql-input"
+            [(ngModel)]="sql"
+            [placeholder]="defaultQuery"
+            rows="4"
+            spellcheck="false"
+          ></textarea>
+          <div class="query-actions">
+            <button class="exec-btn" (click)="runQuery()" [disabled]="executing">
+              {{ executing ? 'Executando...' : 'Executar' }}
+            </button>
+            @if (results && results.length > 0) {
+              <button class="add-btn" (click)="addToShoebox()" [disabled]="adding">
+                {{ adding ? 'Adicionando...' : 'Adicionar aos Resultados' }}
+              </button>
+            }
+          </div>
         </div>
-      }
+        @if (error) {
+          <div class="error-msg">{{ error }}</div>
+        }
+        @if (results && results.length === 0 && !error) {
+          <div class="empty-msg">Nenhum resultado encontrado</div>
+        }
+        @if (results && results.length > 0) {
+          <div class="result-section">
+            <div class="result-count">{{ results.length }} resultado(s)</div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    @for (col of columns; track col) {
+                      <th>{{ col }}</th>
+                    }
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (row of results; track $index) {
+                    <tr>
+                      @for (col of columns; track col) {
+                        <td [class.col-message]="col === 'message'">{{ row[col] }}</td>
+                      }
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </div>
+        }
+      </div>
     </div>
   `,
   styles: `
@@ -144,7 +107,7 @@ import { DocViewer } from './doc-viewer';
     .modal {
       position: relative;
       width: 92%;
-      max-width: 900px;
+      max-width: 960px;
       height: 85vh;
       background: var(--color-surface);
       border-radius: var(--radius-lg);
@@ -166,35 +129,6 @@ import { DocViewer } from './doc-viewer';
     .modal-header h2 {
       font-size: 1.125rem;
       font-weight: 600;
-    }
-
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .upload-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 7px 14px;
-      background: var(--color-accent);
-      color: white;
-      border: none;
-      border-radius: var(--radius-sm);
-      font-size: 0.8125rem;
-      font-weight: 500;
-      transition: background 0.15s;
-    }
-
-    .upload-btn:hover:not(:disabled) {
-      background: var(--color-accent-hover);
-    }
-
-    .upload-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
     }
 
     .close-btn {
@@ -219,227 +153,264 @@ import { DocViewer } from './doc-viewer';
       flex: 1;
       overflow-y: auto;
       padding: 20px;
-    }
-
-    .empty-state {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 12px;
-      padding: 48px 0;
-      color: var(--color-text-secondary);
-    }
-
-    .empty-state p {
-      font-size: 0.9375rem;
-    }
-
-    .doc-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
       gap: 16px;
     }
 
-    .doc-card {
-      position: relative;
-      background: var(--color-surface);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-      transition: box-shadow 0.15s, transform 0.15s;
-    }
-
-    .doc-card:hover {
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-      transform: translateY(-2px);
-    }
-
-    .doc-card.in-shoebox {
-      border-color: #22c55e;
-    }
-
-    .shoebox-badge {
-      position: absolute;
-      top: 8px;
-      right: 8px;
-      width: 22px;
-      height: 22px;
-      background: #22c55e;
-      color: white;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 2;
-    }
-
-    .card-icon {
-      aspect-ratio: 4 / 3;
+    .schema-box {
+      padding: 12px 14px;
       background: var(--color-bg);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
       display: flex;
-      align-items: center;
-      justify-content: center;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .schema-title {
+      font-weight: 600;
+      color: var(--color-text);
+    }
+
+    .schema-title code, .schema-table code {
+      font-family: var(--font-mono, monospace);
+      background: var(--color-surface);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.8125rem;
+    }
+
+    .schema-desc {
+      color: var(--color-text-secondary);
+      line-height: 1.4;
+    }
+
+    .schema-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 2px;
+    }
+
+    .schema-table th, .schema-table td {
+      padding: 4px 8px;
+      text-align: left;
+      border-bottom: 1px solid var(--color-border);
+      font-size: 0.8125rem;
+    }
+
+    .schema-table th {
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      background: transparent;
+      position: static;
+    }
+
+    .schema-table td:nth-child(2) {
+      font-family: var(--font-mono, monospace);
       color: var(--color-text-secondary);
     }
 
-    .card-footer {
-      padding: 10px 12px;
-      border-top: 1px solid var(--color-border);
-    }
-
-    .card-name {
-      font-size: 0.75rem;
-      font-weight: 500;
-      color: var(--color-text);
-      display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .card-overlay {
-      position: absolute;
-      inset: 0;
-      background: rgba(15, 23, 42, 0.7);
+    .query-section {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      padding: 12px;
-      opacity: 0;
-      transition: opacity 0.15s;
+      gap: 8px;
     }
 
-    .doc-card:hover .card-overlay {
-      opacity: 1;
+    .query-section label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--color-text-secondary);
     }
 
-    .action-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
+    textarea {
       width: 100%;
-      padding: 7px 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg);
+      color: var(--color-text);
+      font-family: var(--font-mono, monospace);
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      resize: vertical;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: var(--color-accent);
+      box-shadow: 0 0 0 2px var(--color-accent-subtle);
+    }
+
+    .query-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .exec-btn, .add-btn {
+      padding: 7px 14px;
       border: none;
       border-radius: var(--radius-sm);
-      font-size: 0.75rem;
+      font-size: 0.8125rem;
       font-weight: 500;
       cursor: pointer;
-      transition: background 0.1s;
+      transition: background 0.15s;
     }
 
-    .view-btn {
-      background: white;
-      color: var(--color-text);
+    .exec-btn {
+      background: var(--color-accent);
+      color: white;
     }
 
-    .view-btn:hover {
-      background: #f0f0f0;
+    .exec-btn:hover:not(:disabled) {
+      background: var(--color-accent-hover);
     }
 
-    .relevance-btn {
+    .add-btn {
       background: #22c55e;
       color: white;
     }
 
-    .relevance-btn:hover:not(:disabled) {
+    .add-btn:hover:not(:disabled) {
       background: #16a34a;
     }
 
-    .relevance-btn:disabled {
+    .exec-btn:disabled, .add-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
     }
 
-    .delete-action {
-      background: transparent;
-      color: rgba(255, 255, 255, 0.7);
+    .error-msg {
+      padding: 10px 14px;
+      background: var(--color-error-bg, #fef2f2);
+      color: var(--color-error, #dc2626);
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
     }
 
-    .delete-action:hover {
-      color: #fca5a5;
-      background: rgba(220, 38, 38, 0.2);
+    .empty-msg {
+      padding: 10px 14px;
+      color: var(--color-text-secondary);
+      font-size: 0.875rem;
+    }
+
+    .result-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .result-count {
+      font-size: 0.75rem;
+      color: var(--color-text-secondary);
+      font-weight: 500;
+    }
+
+    .table-scroll {
+      flex: 1;
+      overflow: auto;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+    }
+
+    th, td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--color-border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    td.col-message {
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-width: 300px;
+    }
+
+    td:not(.col-message) {
+      white-space: nowrap;
+    }
+
+    th {
+      background: var(--color-bg);
+      font-weight: 600;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      white-space: nowrap;
+    }
+
+    tr:hover td {
+      background: var(--color-accent-subtle);
     }
   `,
 })
-export class SourcesModal implements OnInit {
+export class SourcesModal {
   @Input() workspaceId = '';
-  @Input() shoeboxDocIds: Set<string> = new Set();
   @Output() close = new EventEmitter<void>();
   @Output() shoeboxChanged = new EventEmitter<void>();
 
-  documents: SourceDocument[] = [];
-  loading = false;
-  uploading = false;
-  viewingDoc: SourceDocument | null = null;
-  viewingUrl = '';
+  defaultQuery = "SELECT * FROM post_rede_social_himark WHERE time >= '2020-04-06 00:00' AND time < '2020-04-06 01:00'";
+  sql = '';
+  executedQuery = '';
+  executing = false;
+  adding = false;
+  results: Record<string, any>[] | null = null;
+  columns: string[] = [];
+  error = '';
 
   constructor(
     private sources: SourcesService,
     private shoebox: ShoeboxService,
   ) {}
 
-  ngOnInit(): void {
-    this.loadDocuments();
-  }
-
-  isInShoebox(docId: string): boolean {
-    return this.shoeboxDocIds.has(docId);
-  }
-
-  onView(doc: SourceDocument): void {
-    this.viewingUrl = this.sources.contentUrl(this.workspaceId, doc.id);
-    this.viewingDoc = doc;
-  }
-
-  addToShoebox(doc: SourceDocument): void {
-    if (this.isInShoebox(doc.id)) return;
-    this.shoebox.add(this.workspaceId, doc.id).subscribe(() => {
-      this.shoeboxDocIds.add(doc.id);
-      this.shoeboxChanged.emit();
-    });
-  }
-
-  onFileSelected(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    this.uploading = true;
-    this.sources.upload(this.workspaceId, file).subscribe({
-      next: (doc) => {
-        this.documents.unshift(doc);
-        this.uploading = false;
-        input.value = '';
+  runQuery(): void {
+    this.executedQuery = this.sql.trim() || this.defaultQuery;
+    this.executing = true;
+    this.error = '';
+    this.results = null;
+    this.columns = [];
+    this.sources.query(this.workspaceId, this.executedQuery).subscribe({
+      next: (rows) => {
+        this.results = rows;
+        this.columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+        this.executing = false;
       },
-      error: () => {
-        this.uploading = false;
-        input.value = '';
+      error: (err) => {
+        this.error = err.error?.detail || 'Erro ao executar consulta';
+        this.executing = false;
       },
     });
   }
 
-  onDelete(doc: SourceDocument): void {
-    this.sources.delete(this.workspaceId, doc.id).subscribe(() => {
-      this.documents = this.documents.filter((d) => d.id !== doc.id);
-      if (this.shoeboxDocIds.has(doc.id)) {
-        this.shoeboxDocIds.delete(doc.id);
-        this.shoeboxChanged.emit();
-      }
-    });
-  }
-
-  private loadDocuments(): void {
-    this.loading = true;
-    this.sources.list(this.workspaceId).subscribe({
-      next: (docs) => {
-        this.documents = docs;
-        this.loading = false;
-      },
-      error: () => {
-        this.loading = false;
-      },
-    });
+  addToShoebox(): void {
+    if (!this.results || this.results.length === 0) return;
+    this.adding = true;
+    this.shoebox
+      .add(
+        this.workspaceId,
+        this.executedQuery,
+        'Adicionado manualmente pelo usuário',
+        this.results
+      )
+      .subscribe({
+        next: () => {
+          this.adding = false;
+          this.shoeboxChanged.emit();
+        },
+        error: () => {
+          this.adding = false;
+        },
+      });
   }
 }
