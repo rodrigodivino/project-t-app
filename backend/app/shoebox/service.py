@@ -39,6 +39,20 @@ def add_item(
     return item
 
 
+def list_summaries_for_prompt(
+    db: Session, workspace_id: uuid.UUID, max_sample_rows: int = 10,
+) -> list[dict]:
+    items = list_items(db, workspace_id)
+    return [
+        {
+            "query": item.query,
+            "explanation": item.explanation,
+            "sample_rows": item.result[:max_sample_rows],
+        }
+        for item in items
+    ]
+
+
 def remove_item(db: Session, item_id: uuid.UUID) -> bool:
     item = db.get(ShoeboxItem, item_id)
     if item is None:

@@ -11,6 +11,7 @@ WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --no-dev --frozen
 COPY backend/ ./
+COPY materials/post_rede_social_himark.csv /materials/post_rede_social_himark.csv
 COPY --from=frontend /build/dist/app/browser /app/static
 
 EXPOSE 8000

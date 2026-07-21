@@ -18,7 +18,7 @@ down_revision: Union[str, Sequence[str], None] = '4ca671e03d32'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-CSV_PATH = Path(__file__).resolve().parents[3] / "materials" / "external_data_source" / "MC3" / "YInt.csv"
+CSV_PATH = Path(__file__).resolve().parents[3] / "materials" / "post_rede_social_himark.csv"
 
 
 def upgrade() -> None:

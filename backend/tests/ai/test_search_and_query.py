@@ -16,14 +16,35 @@ SAMPLE_DATA = {"frames": [], "evidence": ["ev-1"], "relationships": []}
 
 
 def test_build_prompt_contains_schematization():
-    prompt = build_prompt(SAMPLE_DATA)
+    prompt = build_prompt(SAMPLE_DATA, [])
     assert "ev-1" in prompt
     assert "post_rede_social_himark" in prompt
 
 
 def test_build_prompt_is_nonempty():
-    prompt = build_prompt({"frames": [], "evidence": [], "relationships": []})
+    prompt = build_prompt(
+        {"frames": [], "evidence": [], "relationships": []}, [],
+    )
     assert len(prompt) > 0
+
+
+def test_build_prompt_empty_shoebox_message():
+    prompt = build_prompt(SAMPLE_DATA, [])
+    assert "vazio" in prompt.lower()
+
+
+def test_build_prompt_includes_existing_items():
+    existing = [
+        {
+            "query": "SELECT COUNT(*) FROM post_rede_social_himark",
+            "explanation": "Contagem total",
+            "sample_rows": [{"count": 42}],
+        },
+    ]
+    prompt = build_prompt(SAMPLE_DATA, existing)
+    assert "SELECT COUNT(*)" in prompt
+    assert "Contagem total" in prompt
+    assert "42" in prompt
 
 
 class FakeResult:
@@ -58,15 +79,15 @@ class FakeSession:
         self.closed = True
 
 
-def fake_llm(data: dict) -> SearchQueries:
+def fake_llm(data: dict, existing: list[dict]) -> SearchQueries:
     return SearchQueries(queries=[
         SearchQuery(
             sql="SELECT id, message FROM post_rede_social_himark LIMIT 5",
-            explanation="Get recent posts",
+            explanation="Buscar postagens recentes",
         ),
         SearchQuery(
             sql="SELECT account, COUNT(*) FROM post_rede_social_himark GROUP BY account",
-            explanation="Count by account",
+            explanation="Contagem por conta",
         ),
     ])
 
@@ -79,13 +100,14 @@ def test_run_creates_shoebox_items():
         SAMPLE_DATA,
         llm_caller=fake_llm,
         session_factory=lambda: session,
+        items_loader=lambda db, ws: [],
     )
     assert session.closed
     assert len(session.added) == 2
     item = session.added[0]
     assert item.workspace_id == ws_id
     assert item.query == "SELECT id, message FROM post_rede_social_himark LIMIT 5"
-    assert item.explanation == "Get recent posts"
+    assert item.explanation == "Buscar postagens recentes"
     assert item.result == [{"id": 1, "message": "hello world"}]
     assert item.ai_authored is True
 
@@ -109,9 +131,51 @@ def test_run_continues_on_query_failure():
         SAMPLE_DATA,
         llm_caller=fake_llm,
         session_factory=lambda: session,
+        items_loader=lambda db, ws: [],
     )
     assert len(session.added) == 1
     assert session.closed
+
+
+def test_run_handles_empty_queries():
+    def empty_llm(data: dict, existing: list[dict]) -> SearchQueries:
+        return SearchQueries(queries=[])
+
+    session = FakeSession()
+    ws_id = uuid.uuid4()
+    run(
+        ws_id,
+        SAMPLE_DATA,
+        llm_caller=empty_llm,
+        session_factory=lambda: session,
+        items_loader=lambda db, ws: [],
+    )
+    assert len(session.added) == 0
+    assert session.closed
+
+
+def test_run_passes_existing_items_to_llm():
+    received = {}
+
+    def capturing_llm(data: dict, existing: list[dict]) -> SearchQueries:
+        received["data"] = data
+        received["existing"] = existing
+        return SearchQueries(queries=[])
+
+    existing_items = [
+        {"query": "SELECT 1", "explanation": "test", "sample_rows": []},
+    ]
+    session = FakeSession()
+    ws_id = uuid.uuid4()
+    run(
+        ws_id,
+        SAMPLE_DATA,
+        llm_caller=capturing_llm,
+        session_factory=lambda: session,
+        items_loader=lambda db, ws: existing_items,
+    )
+    assert received["data"] == SAMPLE_DATA
+    assert received["existing"] == existing_items
 
 
 def test_clean_rows_serializes_datetime():
@@ -129,9 +193,9 @@ def test_fire_returns_immediately():
     session = FakeSession()
     ws_id = uuid.uuid4()
 
-    def slow_llm(data: dict) -> SearchQueries:
+    def slow_llm(data: dict, existing: list[dict]) -> SearchQueries:
         time.sleep(0.5)
-        return fake_llm(data)
+        return fake_llm(data, existing)
 
     start = time.monotonic()
     fire(ws_id, SAMPLE_DATA)

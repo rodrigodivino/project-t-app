@@ -500,7 +500,7 @@ import {
     .shoebox-card,
     .evidence-card {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
       padding: 8px 10px;
       background: var(--color-surface);
@@ -545,6 +545,7 @@ import {
 
     .shoebox-card-ai .card-name {
       font-family: inherit;
+      white-space: normal;
     }
 
     @keyframes card-fade-in {
@@ -628,9 +629,7 @@ import {
       font-weight: 500;
       font-family: var(--font-mono, monospace);
       display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      line-height: 1.4;
     }
 
     .evidence-card .card-name {

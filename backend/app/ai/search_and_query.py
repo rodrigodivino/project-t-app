@@ -7,7 +7,7 @@ from typing import Callable
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -18,31 +18,59 @@ from app.sources import service as sources_service
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are a data analyst. You have access to a PostgreSQL table called \
-post_rede_social_himark with the following schema:
+Você opera dentro de um framework de sensemaking, no passo \
+"Search and Filter". Os construtos do framework são: fonte de \
+dados externa, shoebox, snippets, arquivo de evidências, frames, \
+esquematização e história.
+
+Seu papel: consultar a fonte de dados externa (uma tabela PostgreSQL) \
+e produzir resultados para depositar no shoebox. Suas consultas devem \
+buscar relevância para a esquematização atual, que contém frames \
+(perspectivas interpretativas), referências de evidência e relações \
+entre eles.
+
+A fonte de dados externa é a tabela post_rede_social_himark, contendo \
+postagens de redes sociais do dataset VAST 2019 MC3, representando a \
+cidade fictícia de St. Himark durante uma crise. O esquema da tabela:
 
   id       INTEGER  PRIMARY KEY (auto-increment)
-  time     TIMESTAMP  (ranges from 2020-04-06 00:00 to 2020-04-10 11:59)
+  time     TIMESTAMP  (de 2020-04-06 00:00 até 2020-04-10 11:59)
   location TEXT
   account  TEXT
   message  TEXT
 
-The possible location values are: Broadview, Chapparal, Cheddarford, \
+Valores possíveis de location: Broadview, Chapparal, Cheddarford, \
 Downtown, Easton, East Parton, <Location with-held due to contract>, \
 Northwest, Oak Willow, Old Town, Palace Hills, Pepper Mill, Safe Town, \
 Scenic Vista, Southton, Southwest, Terrapin Springs, UNKNOWN, Weston, \
 West Parton, Wilson Forest.
 
-The user is building a schematization to make sense of this data. \
-A schematization contains frames (interpretive lenses), evidence \
-references, and relationships between them.
+Características importantes dos dados:
+- As mensagens são escritas em inglês.
+- As postagens podem conter conteúdo não confiável, automatizado ou \
+gerado por bots.
 
-Given the current schematization state, produce exactly 5 SQL SELECT \
-queries that search the table for records relevant to the schematization. \
-Each query should explore a different angle: temporal patterns, location \
-clusters, account activity, keyword matches in messages, or cross-column \
-correlations. Keep queries simple and fast. Always use the table name \
-post_rede_social_himark. Do not use CTEs or subqueries unless necessary."""
+Regras:
+- Produza ATÉ 3 consultas SQL SELECT. Se a esquematização já estiver \
+bem coberta pelos itens existentes no shoebox, produza menos ou nenhuma.
+- Prefira consultas que agregam, agrupam, fatiam e cruzam os dados de \
+formas úteis: COUNT, GROUP BY, date_trunc, filtros por palavras-chave, \
+combinações de colunas. Consultas que revelam padrões são mais valiosas \
+do que tabelas brutas de linhas individuais.
+- Limite os resultados com LIMIT para evitar tabelas gigantes. Use \
+LIMIT em consultas de linhas individuais. Agregações naturalmente \
+compactas (poucos grupos) não precisam de LIMIT.
+- Não gere consultas que dupliquem ou sobreponham substancialmente os \
+itens já existentes no shoebox.
+- Mantenha as consultas simples e rápidas. Use sempre o nome da tabela \
+post_rede_social_himark. Não use CTEs ou subconsultas a menos que \
+necessário.
+- O campo "explanation" DEVE ser escrito em português brasileiro (pt-BR) \
+com acentuação correta. Use o formato "X, para Y", onde X descreve o \
+que os resultados contêm e Y é a razão pela qual isso é relevante \
+para a esquematização. Exemplo: "Contagem de postagens por bairro \
+por hora, para identificar onde a atividade concentrou durante a crise". \
+O SQL permanece em inglês."""
 
 
 class SearchQuery(BaseModel):
@@ -51,22 +79,47 @@ class SearchQuery(BaseModel):
 
 
 class SearchQueries(BaseModel):
-    queries: list[SearchQuery]
+    queries: list[SearchQuery] = Field(default_factory=list)
 
 
-def build_prompt(schematization_data: dict) -> str:
-    return (
-        "Here is the current schematization state:\n\n"
-        f"{json.dumps(schematization_data, indent=2)}\n\n"
-        "Produce 5 SQL SELECT queries against post_rede_social_himark "
-        "that would help the analyst explore data relevant to this "
-        "schematization."
+def build_prompt(schematization_data: dict, existing_items: list[dict]) -> str:
+    parts = [
+        "Estado atual da esquematização:\n\n",
+        json.dumps(schematization_data, indent=2),
+        "\n\n",
+    ]
+    if existing_items:
+        parts.append(
+            "O shoebox já contém os seguintes itens "
+            "(consulta + explicação + amostra de linhas). "
+            "Evite gerar consultas que dupliquem essa cobertura:\n\n"
+        )
+        for i, item in enumerate(existing_items, 1):
+            parts.append(f"--- Item {i} ---\n")
+            parts.append(f"Consulta: {item['query']}\n")
+            parts.append(f"Explicação: {item['explanation']}\n")
+            if item.get("sample_rows"):
+                parts.append(
+                    f"Amostra: {json.dumps(item['sample_rows'], indent=2, default=str)}\n"
+                )
+            parts.append("\n")
+    else:
+        parts.append("O shoebox está vazio.\n\n")
+
+    parts.append(
+        "Produza até 3 consultas SQL SELECT contra post_rede_social_himark "
+        "que ajudem o analista a explorar dados relevantes para esta "
+        "esquematização. Se os itens existentes já cobrem bem a "
+        "esquematização, produza menos ou nenhuma consulta."
     )
+    return "".join(parts)
 
 
-def call_llm(schematization_data: dict) -> SearchQueries:
+def call_llm(
+    schematization_data: dict, existing_items: list[dict],
+) -> SearchQueries:
     llm = ChatAnthropic(
-        model_name="claude-opus-4-8",
+        model_name="claude-sonnet-5",
         api_key=SecretStr(ANTHROPIC_API_KEY),
         timeout=30,
         stop=None,
@@ -74,7 +127,7 @@ def call_llm(schematization_data: dict) -> SearchQueries:
     structured = llm.with_structured_output(SearchQueries)
     result = structured.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=build_prompt(schematization_data)),
+        HumanMessage(content=build_prompt(schematization_data, existing_items)),
     ])
     return result  # type: ignore[return-value]
 
@@ -96,12 +149,14 @@ def _clean_rows(rows: list[dict]) -> list[dict]:
 def run(
     workspace_id: uuid.UUID,
     schematization_data: dict,
-    llm_caller: Callable[[dict], SearchQueries] = call_llm,
+    llm_caller: Callable[[dict, list[dict]], SearchQueries] = call_llm,
     session_factory: Callable[[], Session] = SessionLocal,
+    items_loader: Callable[..., list[dict]] = shoebox_service.list_summaries_for_prompt,
 ) -> None:
     db: Session = session_factory()
     try:
-        queries = llm_caller(schematization_data)
+        existing = items_loader(db, workspace_id)
+        queries = llm_caller(schematization_data, existing)
         for q in queries.queries:
             try:
                 rows = sources_service.execute_query(db, q.sql)
