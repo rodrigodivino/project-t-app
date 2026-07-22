@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependency import require_auth
 from app.database import get_db
-from app.schematization.service import add_evidence, get_or_create, remove_evidence
+from app.schematization.service import add_evidence, get_or_create, remove_evidence, trigger_search
 
 router = APIRouter(
     prefix="/api/workspaces/{ws_id}/schematization",
@@ -46,3 +46,9 @@ def remove_ev(
 ) -> SchematizationResponse:
     row = remove_evidence(db, ws_id, evidence_id)
     return SchematizationResponse.model_validate(row)
+
+
+@router.post("/ai-search", status_code=202)
+def ai_search(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+    trigger_search(db, ws_id)
+    return {"status": "accepted"}

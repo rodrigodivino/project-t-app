@@ -2,7 +2,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from app.ai import search_and_query
+from app.ai import read_and_extract, search_and_query
 from app.schematization.models import Schematization
 from app import settings
 
@@ -49,9 +49,17 @@ def remove_evidence(db: Session, workspace_id: uuid.UUID, evidence_id: uuid.UUID
     return row
 
 
+def trigger_search(db: Session, workspace_id: uuid.UUID) -> None:
+    if not settings.ANTHROPIC_API_KEY:
+        return
+    row = get_or_create(db, workspace_id)
+    search_and_query.fire(workspace_id, row.data)
+
+
 def _maybe_fire(workspace_id: uuid.UUID, data: dict) -> None:
     if not settings.ANTHROPIC_API_KEY:
         return
     if not data.get("evidence"):
         return
     search_and_query.fire(workspace_id, data)
+    read_and_extract.fire(workspace_id)

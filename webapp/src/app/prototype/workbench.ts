@@ -1,4 +1,5 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
+import embed, { VisualizationSpec } from 'vega-embed';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 import { SourcesModal } from './sources-modal';
@@ -27,7 +28,19 @@ import {
       </header>
       <div class="workbench-board">
         <section class="board-column">
-          <h2>Resultados</h2>
+          <h2>
+            Resultados
+            <button class="ai-search-btn"
+                    [class.ai-search-cooking]="aiCooking"
+                    [disabled]="aiCooking"
+                    (click)="triggerAiSearch()"
+                    title="Busca IA">
+              <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
+                   fill="currentColor" stroke="none">
+                <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/>
+              </svg>
+            </button>
+          </h2>
           @if (aiCooking) {
             <div class="ai-shimmer"></div>
           }
@@ -92,6 +105,9 @@ import {
 
         <section class="board-column">
           <h2>Evidências</h2>
+          @if (evidenceCooking) {
+            <div class="ai-shimmer"></div>
+          }
           <div class="column-body">
             @if (filteredEvidence.length === 0) {
               <p class="placeholder">Nenhuma evidência extraída</p>
@@ -100,19 +116,32 @@ import {
               <div
                 class="evidence-card"
                 [class.evidence-ai]="isUncertain(item)"
+                [class.evidence-card-new]="newEvidenceIds.has(item.id)"
                 [draggable]="isDraggable(item)"
                 (dragstart)="onDragStart($event, item)"
                 (click)="viewEvidenceItem(item)"
               >
+                @if (unseenEvidenceIds.has(item.id)) {
+                  <span class="notif-dot"></span>
+                }
                 <div class="card-icon">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                       stroke="currentColor" stroke-width="1.5"
-                       stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                    <line x1="16" y1="13" x2="8" y2="13"/>
-                    <line x1="16" y1="17" x2="8" y2="17"/>
-                  </svg>
+                  @if (item.ai_authored) {
+                    <svg class="sparkle-icon"
+                         [class.sparkle-pulse]="newEvidenceIds.has(item.id)"
+                         width="20" height="20" viewBox="0 0 24 24"
+                         fill="var(--color-accent)" stroke="none">
+                      <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/>
+                    </svg>
+                  } @else {
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="1.5"
+                         stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                  }
                 </div>
                 <div class="card-info">
                   <span class="card-name" [title]="item.content">{{ item.content }}</span>
@@ -246,6 +275,12 @@ import {
             <label>Explicação</label>
             <p class="detail-explanation">{{ viewingDetail.explanation }}</p>
           </div>
+          @if (viewingDetail.chart_spec) {
+            <div class="detail-field">
+              <label>Visualização</label>
+              <div class="chart-container" #chartContainer></div>
+            </div>
+          }
           <div class="detail-field">
             <label>Resultado ({{ viewingDetail.result.length }} linha(s))</label>
             <div class="table-scroll">
@@ -357,6 +392,12 @@ import {
               </div>
             }
           </div>
+          @if (evidenceSourceExplanation) {
+            <div class="detail-field">
+              <label>Explicação do Resultado</label>
+              <p class="detail-explanation">{{ evidenceSourceExplanation }}</p>
+            </div>
+          }
           @if (evidenceSourceData) {
             <div class="detail-field">
               <label>Dados ({{ evidenceSourceData.length }} linha(s))</label>
@@ -459,6 +500,40 @@ import {
       color: var(--color-text-secondary);
       padding: 14px 16px;
       border-bottom: 1px solid var(--color-border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .ai-search-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+      margin-left: auto;
+      padding: 0;
+    }
+
+    .ai-search-btn:hover:not(:disabled) {
+      color: var(--color-accent);
+      background: var(--color-accent-subtle);
+    }
+
+    .ai-search-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    .ai-search-cooking .sparkle-icon {
+      color: var(--color-accent);
+      animation: sparkle-spin 0.8s ease-in-out infinite;
     }
 
     .column-body {
@@ -585,6 +660,11 @@ import {
 
     .evidence-card .card-icon {
       color: var(--color-accent);
+    }
+
+    .evidence-card-new {
+      animation: card-fade-in 0.8s ease-out,
+                 glow-fade 2.5s ease-out forwards;
     }
 
     .evidence-ai {
@@ -1055,6 +1135,14 @@ import {
       background: var(--color-warning-bg);
     }
 
+    .chart-container {
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      background: var(--color-bg);
+      min-height: 300px;
+    }
+
     .ai-badge-inline {
       display: inline-block;
       font-size: 0.6875rem;
@@ -1070,18 +1158,36 @@ import {
   `,
 })
 export class Workbench implements OnInit, OnDestroy {
+  private chartContainerEl?: ElementRef<HTMLDivElement>;
+  @ViewChild('chartContainer') set chartContainer(el: ElementRef<HTMLDivElement> | undefined) {
+    this.chartContainerEl = el;
+    if (el && this.viewingDetail?.chart_spec) {
+      this.renderSelectableChart(el.nativeElement, this.viewingDetail.chart_spec, this.viewingDetail.result, this.selectedRows);
+    }
+  }
+
+  private evidenceChartContainerEl?: ElementRef<HTMLDivElement>;
+  @ViewChild('evidenceChartContainer') set evidenceChartContainer(el: ElementRef<HTMLDivElement> | undefined) {
+    this.evidenceChartContainerEl = el;
+    if (el && this.evidenceSourceShoebox?.chart_spec) {
+      this.renderLockedChart(el.nativeElement, this.evidenceSourceShoebox.chart_spec, this.evidenceSourceShoebox.result, this.evidenceSelectedRows);
+    }
+  }
+
   workspaceId = '';
   sourcesOpen = false;
   shoeboxItems: ShoeboxItemSummary[] = [];
   viewingDetail: ShoeboxItemFull | null = null;
   detailColumns: string[] = [];
   selectedRows = new Set<number>();
+  private brushing = false;
   addingEvidence = false;
   evidenceText = '';
 
   evidenceItems: EvidenceItemSummary[] = [];
   viewingEvidence: EvidenceItemFull | null = null;
-  evidenceSourceData: Record<string, unknown>[] | null = null;
+  evidenceSourceShoebox: ShoeboxItemFull | null = null;
+  evidenceSelectedRows = new Set<number>();
   evidenceSourceColumns: string[] = [];
   verifyCountdown = 0;
   correctingEvidence = false;
@@ -1100,6 +1206,14 @@ export class Workbench implements OnInit, OnDestroy {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private cookingTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  newEvidenceIds = new Set<string>();
+  unseenEvidenceIds = new Set<string>();
+  evidenceCooking = false;
+  private knownEvidenceIds = new Set<string>();
+  private evidenceInitialLoad = true;
+  private evidencePollTimer: ReturnType<typeof setInterval> | null = null;
+  private evidenceCookingTimeout: ReturnType<typeof setTimeout> | null = null;
+
   constructor(
     private route: ActivatedRoute,
     private shoeboxSvc: ShoeboxService,
@@ -1113,6 +1227,7 @@ export class Workbench implements OnInit, OnDestroy {
     this.loadEvidence();
     this.loadSchematization();
     this.pollTimer = setInterval(() => this.loadShoebox(), 5000);
+    this.evidencePollTimer = setInterval(() => this.loadEvidence(), 5000);
   }
 
   ngOnDestroy(): void {
@@ -1123,6 +1238,14 @@ export class Workbench implements OnInit, OnDestroy {
     if (this.cookingTimeout !== null) {
       clearTimeout(this.cookingTimeout);
       this.cookingTimeout = null;
+    }
+    if (this.evidencePollTimer !== null) {
+      clearInterval(this.evidencePollTimer);
+      this.evidencePollTimer = null;
+    }
+    if (this.evidenceCookingTimeout !== null) {
+      clearTimeout(this.evidenceCookingTimeout);
+      this.evidenceCookingTimeout = null;
     }
     this.clearVerifyTimer();
   }
@@ -1140,11 +1263,83 @@ export class Workbench implements OnInit, OnDestroy {
     });
   }
 
+  private renderSelectableChart(
+    el: HTMLDivElement,
+    spec: Record<string, any>,
+    data: Record<string, any>[],
+    selectedRows: Set<number>,
+  ): void {
+    const stamped = data.map((row, i) => ({ ...row, _vi: i } as Record<string, any>));
+    const containerWidth = el.clientWidth - 24;
+    const fullSpec = {
+      ...spec,
+      width: Math.max(containerWidth, 200),
+      autosize: { type: 'fit', contains: 'padding' },
+      data: { values: stamped },
+    } as VisualizationSpec;
+    embed(el, fullSpec, { actions: false, renderer: 'svg' }).then(({ view }) => {
+      view.addSignalListener('brush', (_name, value) => {
+        if (!value || !this.viewingDetail) return;
+        const fields = Object.keys(value);
+        if (fields.length === 0) return;
+        const brushed = new Set<number>();
+        for (let i = 0; i < stamped.length; i++) {
+          let inside = true;
+          for (const field of fields) {
+            const range = value[field];
+            if (!Array.isArray(range) || range.length !== 2) { inside = false; break; }
+            const v = stamped[i][field];
+            if (v == null) { inside = false; break; }
+            const numV = typeof v === 'string' ? new Date(v).getTime() : Number(v);
+            const lo = typeof range[0] === 'string' ? new Date(range[0]).getTime() : Number(range[0]);
+            const hi = typeof range[1] === 'string' ? new Date(range[1]).getTime() : Number(range[1]);
+            if (numV < Math.min(lo, hi) || numV > Math.max(lo, hi)) { inside = false; break; }
+          }
+          if (inside) brushed.add(i);
+        }
+        const merged = new Set(this.selectedRows);
+        for (const idx of brushed) merged.add(idx);
+        this.selectedRows = merged;
+      });
+    }).catch(() => {});
+  }
+
+  private renderLockedChart(
+    el: HTMLDivElement,
+    spec: Record<string, any>,
+    data: Record<string, any>[],
+    selectedRows: Set<number>,
+  ): void {
+    const stamped = data.map((row, i) => ({ ...row, _selected: selectedRows.has(i) }));
+    const containerWidth = el.clientWidth - 24;
+    const { params: _dropped, ...specNoParams } = spec;
+    const fullSpec = {
+      ...specNoParams,
+      width: Math.max(containerWidth, 200),
+      autosize: { type: 'fit', contains: 'padding' },
+      data: { values: stamped },
+      encoding: {
+        ...(specNoParams['encoding'] || {}),
+        opacity: {
+          condition: { test: 'datum._selected', value: 1 },
+          value: 0.2,
+        },
+      },
+    } as VisualizationSpec;
+    embed(el, fullSpec, { actions: false, renderer: 'svg' }).catch(() => {});
+  }
+
   closeDetail(): void {
     this.viewingDetail = null;
     this.selectedRows = new Set();
     this.addingEvidence = false;
     this.evidenceText = '';
+  }
+
+  triggerAiSearch(): void {
+    this.schemaSvc.triggerAiSearch(this.workspaceId).subscribe(() => {
+      this.startCooking();
+    });
   }
 
   loadShoebox(): void {
@@ -1165,6 +1360,7 @@ export class Workbench implements OnInit, OnDestroy {
       this.knownShoeboxIds = new Set(items.map((i) => i.id));
       if (freshAiIds.length > 0) {
         this.stopCooking();
+        this.startEvidenceCooking();
         for (const id of freshAiIds) {
           this.newShoeboxIds.add(id);
           this.unseenShoeboxIds.add(id);
@@ -1228,8 +1424,37 @@ export class Workbench implements OnInit, OnDestroy {
 
   loadEvidence(): void {
     this.evidenceSvc.list(this.workspaceId).subscribe((items) => {
+      if (this.evidenceInitialLoad) {
+        this.evidenceItems = items;
+        this.knownEvidenceIds = new Set(items.map((i) => i.id));
+        this.evidenceInitialLoad = false;
+        this.updateFilteredEvidence();
+        return;
+      }
+      const freshAiIds: string[] = [];
+      for (const item of items) {
+        if (!this.knownEvidenceIds.has(item.id) && item.ai_authored) {
+          freshAiIds.push(item.id);
+        }
+      }
       this.evidenceItems = items;
+      this.knownEvidenceIds = new Set(items.map((i) => i.id));
       this.updateFilteredEvidence();
+      if (freshAiIds.length > 0) {
+        this.stopEvidenceCooking();
+        for (const id of freshAiIds) {
+          this.newEvidenceIds.add(id);
+          this.unseenEvidenceIds.add(id);
+        }
+        this.newEvidenceIds = new Set(this.newEvidenceIds);
+        this.unseenEvidenceIds = new Set(this.unseenEvidenceIds);
+        setTimeout(() => {
+          for (const id of freshAiIds) {
+            this.newEvidenceIds.delete(id);
+          }
+          this.newEvidenceIds = new Set(this.newEvidenceIds);
+        }, 2500);
+      }
     });
   }
 
@@ -1279,6 +1504,7 @@ export class Workbench implements OnInit, OnDestroy {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
       this.startCooking();
+      this.startEvidenceCooking();
     });
   }
 
@@ -1289,8 +1515,10 @@ export class Workbench implements OnInit, OnDestroy {
       this.updateFilteredEvidence();
       if (resp.data.evidence.length > 0) {
         this.startCooking();
+        this.startEvidenceCooking();
       } else {
         this.stopCooking();
+        this.stopEvidenceCooking();
       }
     });
   }
@@ -1314,17 +1542,39 @@ export class Workbench implements OnInit, OnDestroy {
     }
   }
 
+  private startEvidenceCooking(): void {
+    this.evidenceCooking = true;
+    if (this.evidenceCookingTimeout !== null) {
+      clearTimeout(this.evidenceCookingTimeout);
+    }
+    this.evidenceCookingTimeout = setTimeout(() => {
+      this.evidenceCooking = false;
+      this.evidenceCookingTimeout = null;
+    }, 30000);
+  }
+
+  private stopEvidenceCooking(): void {
+    this.evidenceCooking = false;
+    if (this.evidenceCookingTimeout !== null) {
+      clearTimeout(this.evidenceCookingTimeout);
+      this.evidenceCookingTimeout = null;
+    }
+  }
+
   isUncertain(item: { ai_authored: boolean; approved: boolean }): boolean {
     return item.ai_authored && !item.approved;
   }
 
   viewEvidenceItem(item: EvidenceItemSummary): void {
+    this.unseenEvidenceIds.delete(item.id);
+    this.unseenEvidenceIds = new Set(this.unseenEvidenceIds);
     this.evidenceSvc.get(this.workspaceId, item.id).subscribe((full) => {
       this.viewingEvidence = full;
       this.correctingEvidence = false;
       this.correctText = '';
       this.startVerifyCountdown(this.isUncertain(full));
       this.shoeboxSvc.get(this.workspaceId, full.shoebox_id).subscribe((shoebox) => {
+        this.evidenceSourceExplanation = shoebox.explanation;
         this.evidenceSourceData = full.rows.map((i) => shoebox.result[i]).filter(Boolean);
         this.evidenceSourceColumns =
           this.evidenceSourceData.length > 0
@@ -1336,6 +1586,7 @@ export class Workbench implements OnInit, OnDestroy {
 
   closeEvidenceDetail(): void {
     this.viewingEvidence = null;
+    this.evidenceSourceExplanation = '';
     this.correctingEvidence = false;
     this.correctText = '';
     this.clearVerifyTimer();

@@ -1,5 +1,6 @@
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, EventEmitter, Input, Output, ViewChild, ElementRef } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import embed, { VisualizationSpec } from 'vega-embed';
 import { SourcesService } from './sources.service';
 import { ShoeboxService } from './shoebox.service';
 
@@ -48,7 +49,7 @@ import { ShoeboxService } from './shoebox.service';
               {{ executing ? 'Executando...' : 'Executar' }}
             </button>
             @if (results && results.length > 0) {
-              <button class="add-btn" (click)="addToShoebox()" [disabled]="adding">
+              <button class="add-btn" (click)="addToShoebox()" [disabled]="adding || !explanation.trim()">
                 {{ adding ? 'Adicionando...' : 'Adicionar aos Resultados' }}
               </button>
             }
@@ -61,6 +62,21 @@ import { ShoeboxService } from './shoebox.service';
           <div class="empty-msg">Nenhum resultado encontrado</div>
         }
         @if (results && results.length > 0) {
+          <div class="explanation-section">
+            <label for="explanation-input">Explicação</label>
+            <textarea
+              id="explanation-input"
+              [(ngModel)]="explanation"
+              placeholder="O que esses resultados mostram e por que são relevantes..."
+              rows="2"
+            ></textarea>
+          </div>
+          @if (generatingChart) {
+            <div class="chart-loading">Gerando visualização...</div>
+          }
+          @if (chartSpec) {
+            <div class="chart-container" #modalChartContainer></div>
+          }
           <div class="result-section">
             <div class="result-count">{{ results.length }} resultado(s)</div>
             <div class="table-scroll">
@@ -283,6 +299,40 @@ import { ShoeboxService } from './shoebox.service';
       cursor: not-allowed;
     }
 
+    .explanation-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .explanation-section label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--color-text-secondary);
+    }
+
+    .explanation-section textarea {
+      font-family: inherit;
+    }
+
+    .chart-container {
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      background: var(--color-bg);
+      display: flex;
+      justify-content: center;
+    }
+
+    .chart-loading {
+      padding: 10px 14px;
+      color: var(--color-text-secondary);
+      font-size: 0.8125rem;
+      font-style: italic;
+    }
+
     .error-msg {
       padding: 10px 14px;
       background: var(--color-error-bg, #fef2f2);
@@ -356,6 +406,14 @@ import { ShoeboxService } from './shoebox.service';
   `,
 })
 export class SourcesModal {
+  private chartContainerEl?: ElementRef<HTMLDivElement>;
+  @ViewChild('modalChartContainer') set chartContainerRef(el: ElementRef<HTMLDivElement> | undefined) {
+    this.chartContainerEl = el;
+    if (el && this.chartSpec && this.results) {
+      this.renderChart(this.chartSpec, this.results);
+    }
+  }
+
   @Input() workspaceId = '';
   @Output() close = new EventEmitter<void>();
   @Output() shoeboxChanged = new EventEmitter<void>();
@@ -365,8 +423,11 @@ export class SourcesModal {
   executedQuery = '';
   executing = false;
   adding = false;
+  generatingChart = false;
   results: Record<string, any>[] | null = null;
   columns: string[] = [];
+  explanation = '';
+  chartSpec: Record<string, any> | null = null;
   error = '';
 
   constructor(
@@ -380,17 +441,45 @@ export class SourcesModal {
     this.error = '';
     this.results = null;
     this.columns = [];
+    this.chartSpec = null;
     this.sources.query(this.workspaceId, this.executedQuery).subscribe({
       next: (rows) => {
         this.results = rows;
         this.columns = rows.length > 0 ? Object.keys(rows[0]) : [];
         this.executing = false;
+        if (rows.length > 0) {
+          this.generateChart(rows);
+        }
       },
       error: (err) => {
         this.error = err.error?.detail || 'Erro ao executar consulta';
         this.executing = false;
       },
     });
+  }
+
+  private generateChart(rows: Record<string, any>[]): void {
+    this.generatingChart = true;
+    this.shoebox
+      .generateChart(this.workspaceId, this.executedQuery, this.explanation || this.executedQuery, rows)
+      .subscribe({
+        next: (resp) => {
+          this.chartSpec = resp.chart_spec;
+          this.generatingChart = false;
+        },
+        error: () => {
+          this.generatingChart = false;
+        },
+      });
+  }
+
+  private renderChart(spec: Record<string, any>, data: Record<string, any>[]): void {
+    if (!this.chartContainerEl) return;
+    const fullSpec = { ...spec, data: { values: data } } as VisualizationSpec;
+    embed(this.chartContainerEl.nativeElement, fullSpec, {
+      actions: false,
+      renderer: 'svg',
+    }).catch(() => {});
   }
 
   addToShoebox(): void {
@@ -400,8 +489,9 @@ export class SourcesModal {
       .add(
         this.workspaceId,
         this.executedQuery,
-        'Adicionado manualmente pelo usuário',
-        this.results
+        this.explanation.trim(),
+        this.results,
+        this.chartSpec,
       )
       .subscribe({
         next: () => {

@@ -15,6 +15,7 @@ export interface ShoeboxItemFull {
   query: string;
   explanation: string;
   result: Record<string, any>[];
+  chart_spec: Record<string, any> | null;
   ai_authored: boolean;
   added_at: string;
 }
@@ -41,11 +42,24 @@ export class ShoeboxService {
     workspaceId: string,
     query: string,
     explanation: string,
-    result: Record<string, any>[]
+    result: Record<string, any>[],
+    chartSpec: Record<string, any> | null = null,
   ): Observable<ShoeboxItemFull> {
     return this.http.post<ShoeboxItemFull>(
       `/api/workspaces/${workspaceId}/shoebox`,
-      { query, explanation, result }
+      { query, explanation, result, chart_spec: chartSpec }
+    );
+  }
+
+  generateChart(
+    workspaceId: string,
+    sql: string,
+    explanation: string,
+    rows: Record<string, any>[],
+  ): Observable<{ chart_spec: Record<string, any> | null }> {
+    return this.http.post<{ chart_spec: Record<string, any> | null }>(
+      `/api/workspaces/${workspaceId}/shoebox/chart`,
+      { sql, explanation, rows }
     );
   }
 

@@ -25,12 +25,14 @@ def add_item(
     explanation: str,
     result: list[dict],
     ai_authored: bool = False,
+    chart_spec: dict | None = None,
 ) -> ShoeboxItem:
     item = ShoeboxItem(
         workspace_id=workspace_id,
         query=query,
         explanation=explanation,
         result=result,
+        chart_spec=chart_spec,
         ai_authored=ai_authored,
     )
     db.add(item)

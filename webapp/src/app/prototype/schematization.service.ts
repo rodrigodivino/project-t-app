@@ -43,4 +43,11 @@ export class SchematizationService {
       `/api/workspaces/${workspaceId}/schematization/evidence/${evidenceId}`
     );
   }
+
+  triggerAiSearch(workspaceId: string): Observable<void> {
+    return this.http.post<void>(
+      `/api/workspaces/${workspaceId}/schematization/ai-search`,
+      {}
+    );
+  }
 }

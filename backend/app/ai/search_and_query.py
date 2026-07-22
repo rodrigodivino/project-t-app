@@ -14,6 +14,7 @@ from app.database import SessionLocal
 from app.settings import ANTHROPIC_API_KEY
 from app.shoebox import service as shoebox_service
 from app.sources import service as sources_service
+from app.ai import read_and_extract
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,69 @@ def call_llm(
     return result  # type: ignore[return-value]
 
 
+CHART_SYSTEM_PROMPT = """\
+Você recebe o SQL de uma consulta, sua explicação e uma amostra dos \
+resultados. Produza uma especificação Vega-Lite v5 que visualize \
+esses dados de forma clara.
+
+Regras:
+- Retorne SOMENTE o objeto de especificação Vega-Lite (mark + encoding + params). \
+Não inclua o campo "data" nem "$schema", pois os dados serão injetados \
+pelo frontend.
+- Escolha o tipo de mark mais adequado: bar para contagens e agregações, \
+line para séries temporais, point para dispersão.
+- Use nomes de campo exatamente como aparecem nas colunas dos resultados.
+- Inclua "title" curto em português brasileiro.
+- Se os dados tiverem campos temporais (time, date, hora), use \
+encoding temporal.
+- Pode usar encoding de color livremente (ex: por categoria).
+- Não defina encoding de opacity. O frontend controla opacity para \
+seleção de dados.
+- Inclua um "params" com uma seleção de brush para permitir ao \
+usuário selecionar dados interativamente. Use o nome "brush" e \
+tipo "interval". Vincule aos eixos apropriados: apenas x para \
+séries temporais e barras, x e y para dispersão. Não conecte o \
+brush a nenhum encoding condicional, o frontend cuida disso.
+- Mantenha a especificação simples. Sem camadas (layer), sem \
+composições (concat/facet).
+- Se os resultados contêm apenas 1 linha ou são puramente textuais \
+(ex: mensagens sem agregação), retorne spec como null."""
+
+
+class ChartSpec(BaseModel):
+    spec: dict | None = None
+
+
+def generate_chart(
+    sql: str, explanation: str, rows: list[dict],
+) -> dict | None:
+    if not ANTHROPIC_API_KEY:
+        return None
+    if not rows:
+        return None
+    columns = list(rows[0].keys())
+    sample = rows[:20]
+    llm = ChatAnthropic(
+        model_name="claude-sonnet-5",
+        api_key=SecretStr(ANTHROPIC_API_KEY),
+        timeout=30,
+        stop=None,
+    )
+    structured = llm.with_structured_output(ChartSpec)
+    prompt = (
+        f"SQL: {sql}\n"
+        f"Explicação: {explanation}\n"
+        f"Colunas: {columns}\n"
+        f"Amostra ({len(sample)} de {len(rows)} linhas):\n"
+        f"{json.dumps(sample, indent=2, default=str)}"
+    )
+    result = structured.invoke([
+        SystemMessage(content=CHART_SYSTEM_PROMPT),
+        HumanMessage(content=prompt),
+    ])
+    return result.spec  # type: ignore[union-attr]
+
+
 def _make_serializable(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()
@@ -157,16 +221,26 @@ def run(
     try:
         existing = items_loader(db, workspace_id)
         queries = llm_caller(schematization_data, existing)
+        new_ids: list[uuid.UUID] = []
         for q in queries.queries:
             try:
                 rows = sources_service.execute_query(db, q.sql)
-                shoebox_service.add_item(
+                clean = _clean_rows(rows)
+                chart = None
+                try:
+                    chart = generate_chart(q.sql, q.explanation, clean)
+                except Exception:
+                    logger.exception("chart generation failed: %s", q.sql)
+                item = shoebox_service.add_item(
                     db, workspace_id, q.sql, q.explanation,
-                    _clean_rows(rows), ai_authored=True,
+                    clean, ai_authored=True, chart_spec=chart,
                 )
+                new_ids.append(item.id)
             except Exception:
                 logger.exception("query failed: %s", q.sql)
                 db.rollback()
+        if new_ids and ANTHROPIC_API_KEY:
+            read_and_extract.fire(workspace_id, shoebox_ids=new_ids)
     except Exception:
         logger.exception(
             "search_and_query failed for workspace %s", workspace_id
