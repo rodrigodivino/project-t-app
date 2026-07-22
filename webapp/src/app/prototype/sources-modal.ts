@@ -476,6 +476,7 @@ export class SourcesModal {
   private renderChart(spec: Record<string, any>, data: Record<string, any>[]): void {
     if (!this.chartContainerEl) return;
     const fullSpec = { ...spec, data: { values: data } } as VisualizationSpec;
+    console.log('[vega-spec]', fullSpec);
     embed(this.chartContainerEl.nativeElement, fullSpec, {
       actions: false,
       renderer: 'svg',

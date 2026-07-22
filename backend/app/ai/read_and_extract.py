@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.evidence import service as evidence_service
 from app.schematization import service as schematization_service
-from app.settings import ANTHROPIC_API_KEY
+from app.settings import AI_MODEL, ANTHROPIC_API_KEY
 from app.shoebox import service as shoebox_service
 
 logger = logging.getLogger(__name__)
@@ -30,13 +30,23 @@ extraídas dos dados subjacentes, sem interpretações, inferências, \
 deduções, julgamentos, vieses ou qualquer outra conclusão subjetiva.
 
 Regras:
-- Produza ATÉ 3 snippets para o item do shoebox fornecido. \
+- Produza ATÉ 2 snippets para o item do shoebox fornecido. \
+Na maioria dos casos, 0 ou 1 snippet é suficiente. Produza 2 somente \
+quando os dados são ricos e contêm observações claramente distintas. \
 Se os dados não contêm informação relevante para a esquematização, \
-produza menos ou nenhum snippet.
+produza nenhum snippet.
 - Cada snippet deve ser uma observação factual e objetiva dos dados, \
 não uma interpretação ou inferência.
 - Cada snippet deve referenciar as linhas específicas do resultado \
 que fundamentam a observação (campo "rows" com índices base-0).
+- As linhas selecionadas devem ser essenciais para o snippet, não \
+menções incidentais. Selecione linhas que exibem o padrão descrito: \
+os maiores valores, os outliers, os que crescem ou declinam, os que \
+contrastam entre si. Se o snippet descreve um padrão que abrange \
+todos os dados, inclua todas as linhas, mas reserve isso para \
+padrões genuinamente globais. Nunca selecione linhas apenas porque \
+elas existem nos resultados. A seleção deve permitir ao leitor \
+verificar a afirmação do snippet olhando somente as linhas indicadas.
 - Não produza snippets que dupliquem ou sobreponham substancialmente \
 as evidências já existentes nos arquivos de evidência.
 - O campo "content" DEVE ser escrito em português brasileiro (pt-BR) \
@@ -54,13 +64,13 @@ class ExtractionResult(BaseModel):
 
 
 def build_prompt(
-    schematization_data: dict,
+    schematization_context: str,
     evidence_titles: list[str],
     shoebox_item: dict,
 ) -> str:
     parts = [
         "Estado atual da esquematização:\n\n",
-        json.dumps(schematization_data, indent=2, default=str),
+        schematization_context,
         "\n\n",
     ]
     if evidence_titles:
@@ -82,29 +92,32 @@ def build_prompt(
     parts.append(json.dumps(result, indent=2, default=str))
     parts.append("\n\n")
     parts.append(
-        "Extraia até 3 snippets factuais relevantes para a esquematização "
-        "a partir dos dados deste item. Para cada snippet, indique quais "
-        "linhas do resultado fundamentam a observação (índices base-0)."
+        "Extraia até 2 snippets factuais relevantes para a esquematização "
+        "a partir dos dados deste item (tipicamente 0 ou 1). Para cada "
+        "snippet, indique quais linhas do resultado fundamentam a "
+        "observação (índices base-0)."
     )
     return "".join(parts)
 
 
 def build_messages(
-    schematization_data: dict,
+    schematization_context: str,
     evidence_titles: list[str],
     shoebox_item: dict,
 ) -> list:
     return [
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(
-            content=build_prompt(schematization_data, evidence_titles, shoebox_item)
+            content=build_prompt(
+                schematization_context, evidence_titles, shoebox_item,
+            )
         ),
     ]
 
 
 def call_llm_batch(inputs: list[list]) -> list[ExtractionResult]:
     llm = ChatAnthropic(
-        model_name="claude-sonnet-5",
+        model_name=AI_MODEL,
         api_key=SecretStr(ANTHROPIC_API_KEY),
         timeout=60,
         stop=None,
@@ -113,7 +126,7 @@ def call_llm_batch(inputs: list[list]) -> list[ExtractionResult]:
     return structured.batch(inputs)
 
 
-def _default_schema_loader(db: Session, workspace_id: uuid.UUID) -> dict:
+def _default_schema_loader(db: Session, workspace_id: uuid.UUID) -> list:
     row = schematization_service.get_or_create(db, workspace_id)
     return row.data
 
@@ -126,11 +139,8 @@ def _default_shoebox_getter(db: Session, item_id: uuid.UUID):
     return shoebox_service.get_item(db, item_id)
 
 
-def _default_evidence_titles_loader(
-    db: Session, workspace_id: uuid.UUID,
-) -> list[str]:
-    items = evidence_service.list_items(db, workspace_id)
-    return [item.content for item in items]
+def _default_evidence_loader(db: Session, workspace_id: uuid.UUID) -> list:
+    return evidence_service.list_items(db, workspace_id)
 
 
 def _item_to_dict(item) -> dict:
@@ -149,15 +159,22 @@ def run(
     schema_loader: Callable = _default_schema_loader,
     shoebox_loader: Callable = _default_shoebox_loader,
     shoebox_getter: Callable = _default_shoebox_getter,
-    evidence_titles_loader: Callable = _default_evidence_titles_loader,
+    evidence_loader: Callable = _default_evidence_loader,
 ) -> None:
     db: Session = session_factory()
     try:
         schema_data = schema_loader(db, workspace_id)
-        if not schema_data.get("evidence"):
+        from app.schematization.service import (
+            _all_evidence_ids, _normalize_data, serialize_for_llm,
+        )
+        tree = _normalize_data(schema_data)
+        if not _all_evidence_ids(tree):
             return
 
-        evidence_titles = evidence_titles_loader(db, workspace_id)
+        evidence_items = evidence_loader(db, workspace_id)
+        evidence_map = {str(item.id): item.content for item in evidence_items}
+        evidence_titles = [item.content for item in evidence_items]
+        schema_context = serialize_for_llm(tree, evidence_map)
 
         if shoebox_ids is not None:
             items = [shoebox_getter(db, sid) for sid in shoebox_ids]
@@ -169,7 +186,7 @@ def run(
             return
 
         inputs = [
-            build_messages(schema_data, evidence_titles, _item_to_dict(item))
+            build_messages(schema_context, evidence_titles, _item_to_dict(item))
             for item in items
         ]
 

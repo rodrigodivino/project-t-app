@@ -1,4 +1,5 @@
-import { Component, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef, ChangeDetectorRef } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import embed, { VisualizationSpec } from 'vega-embed';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
@@ -16,11 +17,29 @@ import {
 import {
   SchematizationData,
   SchematizationService,
+  SchemaNode,
+  RelType,
+  allEvidenceIds,
 } from './schematization.service';
+
+interface ResolvedNode {
+  type: 'evidence' | 'frame';
+  id: string;
+  rel?: RelType;
+  evidence?: EvidenceItemSummary;
+  title?: string;
+  description?: string;
+  children: ResolvedNode[];
+}
+
+interface DropIndicator {
+  parentId: string | null;
+  index: number;
+}
 
 @Component({
   selector: 'app-workbench',
-  imports: [SourcesModal, FormsModule],
+  imports: [SourcesModal, FormsModule, NgTemplateOutlet],
   template: `
     <div class="workbench">
       <header class="workbench-header">
@@ -77,9 +96,8 @@ import {
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="1.5"
                          stroke-linecap="round" stroke-linejoin="round">
-                      <ellipse cx="12" cy="5" rx="9" ry="3"/>
-                      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
-                      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                      <circle cx="12" cy="7" r="4"/>
                     </svg>
                   }
                 </div>
@@ -104,7 +122,19 @@ import {
         </section>
 
         <section class="board-column">
-          <h2>Evidências</h2>
+          <h2>
+            Evidências
+            <button class="ai-search-btn"
+                    [class.ai-search-cooking]="evidenceCooking"
+                    [disabled]="evidenceCooking"
+                    (click)="triggerAiExtract()"
+                    title="Extrair evidências IA">
+              <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
+                   fill="currentColor" stroke="none">
+                <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/>
+              </svg>
+            </button>
+          </h2>
           @if (evidenceCooking) {
             <div class="ai-shimmer"></div>
           }
@@ -129,25 +159,21 @@ import {
                     <svg class="sparkle-icon"
                          [class.sparkle-pulse]="newEvidenceIds.has(item.id)"
                          width="20" height="20" viewBox="0 0 24 24"
-                         fill="var(--color-accent)" stroke="none">
+                         [attr.fill]="isUncertain(item) ? 'var(--color-warning)' : 'var(--color-text-secondary)'"
+                         stroke="none">
                       <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/>
                     </svg>
                   } @else {
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="1.5"
                          stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                      <polyline points="14 2 14 8 20 8"/>
-                      <line x1="16" y1="13" x2="8" y2="13"/>
-                      <line x1="16" y1="17" x2="8" y2="17"/>
+                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                      <circle cx="12" cy="7" r="4"/>
                     </svg>
                   }
                 </div>
                 <div class="card-info">
                   <span class="card-name" [title]="item.content">{{ item.content }}</span>
-                  @if (isUncertain(item)) {
-                    <span class="ai-badge">IA · a verificar</span>
-                  }
                 </div>
                 <button
                   class="card-remove"
@@ -168,46 +194,133 @@ import {
 
         <section
           class="board-column schema-column"
-          [class.schema-dragover]="schemaDragover"
           (dragover)="onSchemaDragover($event)"
           (dragleave)="onSchemaDragleave($event)"
           (drop)="onSchemaDrop($event)"
         >
           <h2>Esquematização</h2>
-          <div class="column-body">
-            @if (schemaEvidence.length === 0 && !schemaDragover) {
+          <div class="column-body schema-drop-zone" data-node-id="root">
+
+            <ng-template #schemaNodeTpl let-node>
+              @if (node.type === 'evidence' && node.evidence) {
+                <div class="schema-node schema-node-evidence"
+                     [draggable]="true"
+                     (dragstart)="onSchemaDragStart($event, node)"
+                     [attr.data-node-id]="node.id"
+                     (click)="onEvidenceNodeClick($event, node.evidence)">
+                  <div class="evidence-row">
+                    <div class="card-info">
+                      <span class="card-name" [title]="node.evidence.content">{{ node.evidence.content }}</span>
+                    </div>
+                    <button class="card-remove" (click)="removeSchemaNode($event, node)" aria-label="Remover">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="2.5"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                      </svg>
+                    </button>
+                  </div>
+                  @if (node.children.length > 0 || dropIndicator?.parentId === node.id) {
+                    <div class="evidence-children" [attr.data-node-id]="node.id">
+                      @if (dropIndicator?.parentId === node.id && dropIndicator?.index === 0) {
+                        <div class="drop-line"></div>
+                      }
+                      @for (child of node.children; track child.id; let ci = $index) {
+                        <ng-container *ngTemplateOutlet="schemaNodeTpl; context: { $implicit: child }"></ng-container>
+                        @if (dropIndicator?.parentId === node.id && dropIndicator?.index === ci + 1) {
+                          <div class="drop-line"></div>
+                        }
+                      }
+                    </div>
+                  }
+                </div>
+              }
+              @if (node.type === 'frame') {
+                <div class="schema-node schema-node-frame"
+                     [draggable]="true"
+                     (dragstart)="onSchemaDragStart($event, node)"
+                     [attr.data-node-id]="node.id">
+                  <div class="frame-header">
+                    @if (editingFrameId === node.id) {
+                      <input class="frame-title-input"
+                             [value]="node.title"
+                             (blur)="saveFrameTitle($event, node.id)"
+                             (keydown.enter)="$any($event.target).blur()"
+                             #frameTitleInput />
+                    } @else {
+                      <span class="frame-title" (click)="startEditingFrame(node.id)">
+                        {{ node.title || 'Nova Hipótese' }}
+                        <svg class="pen-icon" width="10" height="10" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                        </svg>
+                      </span>
+                    }
+                    <button class="card-remove" (click)="removeSchemaNode($event, node)" aria-label="Remover">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="2.5"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                      </svg>
+                    </button>
+                  </div>
+                  @if (editingDescId === node.id) {
+                    <textarea class="frame-desc-input"
+                              [value]="node.description || ''"
+                              (blur)="saveFrameDesc($event, node.id)"
+                              (keydown.enter)="$any($event.target).blur()"
+                              rows="2"
+                              #frameDescInput></textarea>
+                  } @else {
+                    <p class="frame-description" [class.frame-description-empty]="!node.description" (click)="startEditingDesc(node.id)">
+                      {{ node.description || 'Descreva esta hipótese...' }}
+                      <svg class="pen-icon" width="10" height="10" viewBox="0 0 24 24" fill="none"
+                           stroke="currentColor" stroke-width="2"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                      </svg>
+                    </p>
+                  }
+                  <div class="frame-children" [attr.data-node-id]="node.id">
+                    <p class="frame-placeholder">Arraste evidências</p>
+                    @if (dropIndicator?.parentId === node.id && dropIndicator?.index === 0) {
+                      <div class="drop-line"></div>
+                    }
+                    @for (child of node.children; track child.id; let ci = $index) {
+                      <ng-container *ngTemplateOutlet="schemaNodeTpl; context: { $implicit: child }"></ng-container>
+                      @if (dropIndicator?.parentId === node.id && dropIndicator?.index === ci + 1) {
+                        <div class="drop-line"></div>
+                      }
+                    }
+                  </div>
+                </div>
+              }
+            </ng-template>
+
+            @if (schemaResolvedItems.length === 0 && !dropIndicator) {
               <p class="placeholder">Arraste evidências para cá</p>
             }
-            @for (item of schemaEvidence; track item.id) {
-              <div class="evidence-card schema-evidence-card" (click)="viewEvidenceItem(item)">
-                <div class="card-icon">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                       stroke="currentColor" stroke-width="1.5"
-                       stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                    <line x1="16" y1="13" x2="8" y2="13"/>
-                    <line x1="16" y1="17" x2="8" y2="17"/>
-                  </svg>
-                </div>
-                <div class="card-info">
-                  <span class="card-name" [title]="item.content">{{ item.content }}</span>
-                </div>
-                <button
-                  class="card-remove"
-                  (click)="removeFromSchema($event, item)"
-                  aria-label="Remover"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                       stroke="currentColor" stroke-width="2.5"
-                       stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"/>
-                    <line x1="6" y1="6" x2="18" y2="18"/>
-                  </svg>
-                </button>
-              </div>
+            @if (dropIndicator?.parentId === null && dropIndicator?.index === 0) {
+              <div class="drop-line"></div>
+            }
+            @for (node of schemaResolvedItems; track node.id; let i = $index) {
+              <ng-container *ngTemplateOutlet="schemaNodeTpl; context: { $implicit: node }"></ng-container>
+              @if (dropIndicator?.parentId === null && dropIndicator?.index === i + 1) {
+                <div class="drop-line"></div>
+              }
             }
           </div>
+          <button class="fab" (click)="createNewFrame()" title="Nova Hipótese">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.5"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
         </section>
       </div>
     </div>
@@ -221,199 +334,69 @@ import {
     @if (viewingDetail) {
       <div class="detail-backdrop" (click)="closeDetail()"></div>
       <div class="detail-modal">
-        <header class="detail-header">
-          <button class="back-btn" (click)="closeDetail()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2"
-                 stroke-linecap="round" stroke-linejoin="round">
-              <line x1="19" y1="12" x2="5" y2="12"/>
-              <polyline points="12 19 5 12 12 5"/>
-            </svg>
-            Voltar
-          </button>
-          @if (selectedRows.size > 0 && !addingEvidence) {
-            <button class="add-evidence-btn" (click)="addingEvidence = true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+        <div class="detail-panel">
+          <header class="detail-header">
+            <button class="back-btn" (click)="closeDetail()">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
                    stroke="currentColor" stroke-width="2"
                    stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"/>
-                <line x1="5" y1="12" x2="19" y2="12"/>
+                <line x1="19" y1="12" x2="5" y2="12"/>
+                <polyline points="12 19 5 12 12 5"/>
               </svg>
-              Adicionar Evidência ({{ selectedRows.size }})
+              Voltar
             </button>
-          }
-        </header>
-        <div class="detail-body">
-          @if (addingEvidence) {
-            <div class="evidence-form">
-              <label>Escreva a evidência observada nas linhas selecionadas</label>
-              <textarea
-                class="evidence-textarea"
-                [(ngModel)]="evidenceText"
-                rows="3"
-                placeholder="Descreva a evidência factual observada nos dados..."
-              ></textarea>
-              <div class="evidence-form-actions">
-                <button class="form-cancel" (click)="addingEvidence = false; evidenceText = ''">
-                  Cancelar
-                </button>
-                <button
-                  class="form-confirm"
-                  [disabled]="!evidenceText.trim()"
-                  (click)="confirmAddEvidence()"
-                >
-                  Confirmar
-                </button>
-              </div>
-            </div>
-          }
-          <div class="detail-field">
-            <label>Consulta</label>
-            <pre class="detail-query">{{ viewingDetail.query }}</pre>
-          </div>
-          <div class="detail-field">
-            <label>Explicação</label>
-            <p class="detail-explanation">{{ viewingDetail.explanation }}</p>
-          </div>
-          @if (viewingDetail.chart_spec) {
+          </header>
+          <div class="detail-body">
             <div class="detail-field">
-              <label>Visualização</label>
-              <div class="chart-container" #chartContainer></div>
+              <label>Consulta</label>
+              <pre class="detail-query">{{ viewingDetail.query }}</pre>
             </div>
-          }
-          <div class="detail-field">
-            <label>Resultado ({{ viewingDetail.result.length }} linha(s))</label>
-            <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th class="col-check">
-                      <label class="check-wrap">
-                        <input
-                          type="checkbox"
-                          [checked]="allRowsSelected()"
-                          (change)="toggleAllRows()"
-                        />
-                        <span class="checkmark"></span>
-                      </label>
-                    </th>
-                    @for (col of detailColumns; track col) {
-                      <th>{{ col }}</th>
-                    }
-                  </tr>
-                </thead>
-                <tbody>
-                  @for (row of viewingDetail.result; track $index) {
-                    <tr [class.row-selected]="selectedRows.has($index)">
-                      <td class="col-check">
-                        <label class="check-wrap">
-                          <input
-                            type="checkbox"
-                            [checked]="selectedRows.has($index)"
-                            (change)="toggleRow($index)"
-                          />
-                          <span class="checkmark"></span>
-                        </label>
-                      </td>
-                      @for (col of detailColumns; track col) {
-                        <td [class.col-message]="col === 'message'">{{ row[col] }}</td>
-                      }
-                    </tr>
-                  }
-                </tbody>
-              </table>
+            <div class="detail-field">
+              <label>Explicação</label>
+              <p class="detail-explanation">{{ viewingDetail.explanation }}</p>
             </div>
-          </div>
-        </div>
-      </div>
-    }
-    @if (viewingEvidence) {
-      <div class="detail-backdrop" (click)="closeEvidenceDetail()"></div>
-      <div class="detail-modal">
-        <header class="detail-header">
-          <button class="back-btn" (click)="closeEvidenceDetail()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2"
-                 stroke-linecap="round" stroke-linejoin="round">
-              <line x1="19" y1="12" x2="5" y2="12"/>
-              <polyline points="12 19 5 12 12 5"/>
-            </svg>
-            Voltar
-          </button>
-          @if (isUncertain(viewingEvidence) && !correctingEvidence) {
-            <div class="header-actions">
-              <button class="action-btn action-reject" (click)="rejectEvidence()">
-                Rejeitar
-              </button>
-              <button class="action-btn action-correct" (click)="startCorrecting()">
-                Corrigir
-              </button>
-              @if (verifyCountdown > 0) {
-                <button class="action-btn action-approve action-disabled" disabled>
-                  Aprovar ({{ verifyCountdown }}s)
-                </button>
-              } @else {
-                <button class="action-btn action-approve" (click)="approveEvidence()">
-                  Aprovar
-                </button>
-              }
-            </div>
-          }
-          @if (correctingEvidence) {
-            <div class="header-actions">
-              <button class="action-btn action-correct-cancel" (click)="cancelCorrecting()">
-                Cancelar
-              </button>
-              <button
-                class="action-btn action-correct-save"
-                [disabled]="!correctText.trim()"
-                (click)="saveCorrectedEvidence()"
-              >
-                Salvar
-              </button>
-            </div>
-          }
-        </header>
-        <div class="detail-body">
-          <div class="detail-field">
-            <label>Evidência</label>
-            @if (correctingEvidence) {
-              <textarea
-                class="evidence-textarea"
-                [(ngModel)]="correctText"
-                rows="3"
-              ></textarea>
-            } @else {
-              <div class="evidence-content-box" [class.evidence-content-ai]="isUncertain(viewingEvidence)">
-                <p class="detail-explanation">{{ viewingEvidence.content }}</p>
-                @if (isUncertain(viewingEvidence)) {
-                  <span class="ai-badge-inline">IA · a verificar</span>
-                }
+            @if (viewingDetail.chart_spec) {
+              <div class="detail-field">
+                <label>Visualização</label>
+                <div class="chart-container" #chartContainer></div>
               </div>
             }
-          </div>
-          @if (evidenceSourceExplanation) {
             <div class="detail-field">
-              <label>Explicação do Resultado</label>
-              <p class="detail-explanation">{{ evidenceSourceExplanation }}</p>
-            </div>
-          }
-          @if (evidenceSourceData) {
-            <div class="detail-field">
-              <label>Dados ({{ evidenceSourceData.length }} linha(s))</label>
+              <label>Resultado ({{ viewingDetail.result.length }} linha(s))</label>
               <div class="table-scroll">
                 <table>
                   <thead>
                     <tr>
-                      @for (col of evidenceSourceColumns; track col) {
+                      <th class="col-check">
+                        <label class="check-wrap">
+                          <input
+                            type="checkbox"
+                            [checked]="allRowsSelected()"
+                            (change)="toggleAllRows()"
+                          />
+                          <span class="checkmark"></span>
+                        </label>
+                      </th>
+                      @for (col of detailColumns; track col) {
                         <th>{{ col }}</th>
                       }
                     </tr>
                   </thead>
                   <tbody>
-                    @for (row of evidenceSourceData; track $index) {
-                      <tr>
-                        @for (col of evidenceSourceColumns; track col) {
+                    @for (row of viewingDetail.result; track $index) {
+                      <tr [class.row-selected]="selectedRows.has($index)"
+                          [class.row-dimmed]="selectedRows.size > 0 && !selectedRows.has($index)">
+                        <td class="col-check">
+                          <label class="check-wrap">
+                            <input
+                              type="checkbox"
+                              [checked]="selectedRows.has($index)"
+                              (change)="toggleRow($index)"
+                            />
+                            <span class="checkmark"></span>
+                          </label>
+                        </td>
+                        @for (col of detailColumns; track col) {
                           <td [class.col-message]="col === 'message'">{{ row[col] }}</td>
                         }
                       </tr>
@@ -421,6 +404,165 @@ import {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+          <div class="detail-footer">
+            @if (addingEvidence) {
+              <div class="footer-form">
+                <textarea
+                  class="evidence-textarea"
+                  [(ngModel)]="evidenceText"
+                  rows="2"
+                  placeholder="Descreva a evidência factual observada nos dados..."
+                ></textarea>
+                <div class="evidence-form-actions">
+                  <button class="form-cancel" (click)="addingEvidence = false; evidenceText = ''">
+                    Cancelar
+                  </button>
+                  <button
+                    class="form-confirm"
+                    [disabled]="!evidenceText.trim()"
+                    (click)="confirmAddEvidence()"
+                  >
+                    Confirmar
+                  </button>
+                </div>
+              </div>
+            } @else {
+              <span class="footer-hint" [class.footer-hint-hidden]="selectedRows.size > 0">selecione dados para criar evidência</span>
+              <div class="footer-actions">
+                @if (selectedRows.size > 0) {
+                  <button class="chart-action-btn chart-clear-btn" (click)="clearSelection()">
+                    Limpar seleção
+                  </button>
+                }
+                <button
+                  class="add-evidence-btn"
+                  [disabled]="selectedRows.size === 0"
+                  (click)="addingEvidence = true"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2"
+                       stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  Adicionar Evidência
+                </button>
+              </div>
+            }
+          </div>
+        </div>
+      </div>
+    }
+    @if (viewingEvidence) {
+      <div class="detail-backdrop" (click)="closeEvidenceDetail()"></div>
+      <div class="detail-modal">
+        <div class="detail-panel">
+          <header class="detail-header">
+            <button class="back-btn" (click)="closeEvidenceDetail()">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <line x1="19" y1="12" x2="5" y2="12"/>
+                <polyline points="12 19 5 12 12 5"/>
+              </svg>
+              Voltar
+            </button>
+          </header>
+          <div class="detail-body">
+            <div class="detail-field">
+              <label>Evidência</label>
+              <div class="evidence-content-box" [class.evidence-content-ai]="isUncertain(viewingEvidence)">
+                <p class="detail-explanation">{{ viewingEvidence.content }}</p>
+              </div>
+            </div>
+            @if (evidenceSourceShoebox?.query) {
+              <div class="detail-field">
+                <label>Consulta</label>
+                <pre class="detail-query">{{ evidenceSourceShoebox!.query }}</pre>
+              </div>
+            }
+            @if (evidenceSourceShoebox?.chart_spec) {
+              <div class="detail-field">
+                <label>Visualização</label>
+                <div class="chart-container" #evidenceChartContainer></div>
+              </div>
+            }
+            @if (evidenceSourceExplanation) {
+              <div class="detail-field">
+                <label>Explicação do Resultado</label>
+                <p class="detail-explanation">{{ evidenceSourceExplanation }}</p>
+              </div>
+            }
+            @if (evidenceSourceData.length > 0) {
+              <div class="detail-field">
+                <label>Dados ({{ evidenceSourceData.length }} linha(s))</label>
+                <div class="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        @for (col of evidenceSourceColumns; track col) {
+                          <th>{{ col }}</th>
+                        }
+                      </tr>
+                    </thead>
+                    <tbody>
+                      @for (row of evidenceSourceData; track $index) {
+                        <tr>
+                          @for (col of evidenceSourceColumns; track col) {
+                            <td [class.col-message]="col === 'message'">{{ row[col] }}</td>
+                          }
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            }
+          </div>
+          @if (isUncertain(viewingEvidence)) {
+            <div class="detail-footer">
+              @if (correctingEvidence) {
+                <div class="footer-form">
+                  <textarea
+                    class="evidence-textarea"
+                    [(ngModel)]="correctText"
+                    rows="3"
+                  ></textarea>
+                  <div class="evidence-form-actions">
+                    <button class="form-cancel" (click)="cancelCorrecting()">
+                      Cancelar
+                    </button>
+                    <button
+                      class="form-confirm"
+                      [disabled]="!correctText.trim()"
+                      (click)="saveCorrectedEvidence()"
+                    >
+                      Salvar
+                    </button>
+                  </div>
+                </div>
+              } @else {
+                <span class="footer-hint" [class.footer-hint-hidden]="verifyCountdown === 0">A IA pode cometer erros, verifique se a evidência condiz com os dados antes de aprovar</span>
+                <div class="footer-actions">
+                  <button class="action-btn action-reject" (click)="rejectEvidence()">
+                    Rejeitar
+                  </button>
+                  <button class="action-btn action-correct" (click)="startCorrecting()">
+                    Corrigir
+                  </button>
+                  @if (verifyCountdown > 0) {
+                    <button class="action-btn action-approve action-disabled" disabled>
+                      Aprovar ({{ verifyCountdown }}s)
+                    </button>
+                  } @else {
+                    <button class="action-btn action-approve" (click)="approveEvidence()">
+                      Aprovar
+                    </button>
+                  }
+                </div>
+              }
             </div>
           }
         </div>
@@ -470,18 +612,210 @@ import {
       border-right: none;
     }
 
-    .schema-dragover {
-      background: var(--color-accent-subtle);
+    .schema-drop-zone {
+      position: relative;
     }
 
-    .schema-dragover .column-body {
-      outline: 2px dashed var(--color-accent);
-      outline-offset: -4px;
+    .schema-node {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 10px;
+      background: var(--color-frame-bg, #F3F0FF);
       border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: box-shadow 0.15s, transform 0.15s;
+      position: relative;
     }
 
-    .schema-evidence-card .card-icon {
-      color: var(--color-accent);
+    .schema-node:hover {
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+      transform: translateY(-1px);
+    }
+
+    .schema-node-evidence {
+      background: var(--color-surface);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .evidence-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      width: 100%;
+    }
+
+    .evidence-children {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-left: 12px;
+      border-left: 2px solid var(--color-border);
+      margin-top: 4px;
+      min-height: 8px;
+    }
+
+    .schema-node-frame > .frame-header .card-name {
+      font-family: inherit;
+      color: var(--color-frame-text, #6D28D9);
+    }
+
+    .schema-node-frame {
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+
+    .schema-node .card-remove {
+      opacity: 0;
+    }
+
+    .schema-node:hover .card-remove {
+      opacity: 1;
+    }
+
+    .schema-node-frame {
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px;
+      border-radius: var(--radius-md);
+    }
+
+    .frame-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+    }
+
+    .frame-title {
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--color-frame-text, #6D28D9);
+      cursor: text;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .frame-title .pen-icon {
+      opacity: 0;
+      color: var(--color-text-secondary);
+      transition: opacity 0.15s;
+    }
+
+    .frame-title:hover .pen-icon {
+      opacity: 0.7;
+    }
+
+    .frame-title-input {
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--color-frame-text, #6D28D9);
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--color-frame-text, #6D28D9);
+      outline: none;
+      padding: 0;
+      font-family: inherit;
+    }
+
+    .frame-description {
+      font-size: 0.75rem;
+      color: var(--color-text-secondary);
+      margin: 0;
+      cursor: text;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .frame-description .pen-icon {
+      opacity: 0;
+      color: var(--color-text-secondary);
+      transition: opacity 0.15s;
+    }
+
+    .frame-description:hover .pen-icon {
+      opacity: 0.7;
+    }
+
+    .frame-description-empty {
+      font-style: italic;
+      opacity: 0.6;
+    }
+
+    .frame-desc-input {
+      font-size: 0.75rem;
+      color: var(--color-text-secondary);
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--color-frame-text, #6D28D9);
+      outline: none;
+      padding: 0;
+      font-family: inherit;
+      resize: none;
+      width: 100%;
+      line-height: 1.4;
+    }
+
+    .frame-children {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 28px;
+      margin-top: 4px;
+      position: relative;
+    }
+
+    .frame-placeholder {
+      font-size: 0.625rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--color-text-secondary);
+      opacity: 0.5;
+      padding: 2px 0;
+      margin: 0;
+    }
+
+    .drop-line {
+      height: 2px;
+      background: var(--color-accent);
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+
+    .schema-column {
+      position: relative;
+    }
+
+    .fab {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: none;
+      background: var(--color-frame-text, #6D28D9);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(109, 40, 217, 0.35);
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+      z-index: 10;
+    }
+
+    .fab:hover {
+      transform: scale(1.08);
+      box-shadow: 0 6px 16px rgba(109, 40, 217, 0.45);
+    }
+
+    .fab:active {
+      transform: scale(0.96);
     }
 
     [draggable="true"] {
@@ -575,11 +909,12 @@ import {
     .shoebox-card,
     .evidence-card {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       gap: 10px;
       padding: 8px 10px;
       background: var(--color-surface);
       border-radius: var(--radius-sm);
+      border-left: 3px solid var(--color-text-secondary);
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
       cursor: pointer;
       transition: box-shadow 0.15s, transform 0.15s;
@@ -659,7 +994,7 @@ import {
     }
 
     .evidence-card .card-icon {
-      color: var(--color-accent);
+      color: var(--color-text-secondary);
     }
 
     .evidence-card-new {
@@ -755,26 +1090,29 @@ import {
       display: flex;
       align-items: center;
       justify-content: center;
-      flex-direction: column;
       pointer-events: none;
     }
 
-    .detail-modal header,
-    .detail-modal .detail-body {
+    .detail-panel {
       pointer-events: auto;
+      width: 92%;
+      max-width: 960px;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
     }
 
     .detail-header {
-      width: 92%;
-      max-width: 960px;
       background: var(--color-surface);
-      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
       padding: 12px 16px;
       border-bottom: 1px solid var(--color-border);
-      box-shadow: var(--shadow-lg);
       display: flex;
       align-items: center;
       gap: 12px;
+      flex-shrink: 0;
     }
 
     .back-btn {
@@ -812,18 +1150,57 @@ import {
       transition: opacity 0.15s, box-shadow 0.15s;
     }
 
-    .add-evidence-btn:hover {
+    .add-evidence-btn:hover:not(:disabled) {
       opacity: 0.9;
       box-shadow: var(--shadow-sm);
     }
 
-    .detail-body {
-      width: 92%;
-      max-width: 960px;
-      height: 75vh;
+    .add-evidence-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .detail-footer {
+      flex-shrink: 0;
       background: var(--color-surface);
-      border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-      box-shadow: var(--shadow-lg);
+      border-top: 1px solid var(--color-border);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+    }
+
+    .footer-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .footer-form {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .footer-form .evidence-form-actions {
+      align-self: flex-end;
+    }
+
+    .footer-hint {
+      font-size: 0.6875rem;
+      color: var(--color-text-secondary);
+    }
+
+    .footer-hint-hidden {
+      visibility: hidden;
+    }
+
+    .detail-body {
+      flex: 1;
+      min-height: 0;
+      background: var(--color-surface);
       overflow-y: auto;
       padding: 20px 24px;
       display: flex;
@@ -1143,6 +1520,36 @@ import {
       min-height: 300px;
     }
 
+    .chart-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .chart-action-btn {
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s, box-shadow 0.15s;
+    }
+
+    .chart-clear-btn {
+      border: 1px solid var(--color-border);
+      background: var(--color-surface);
+      color: var(--color-text-secondary);
+    }
+
+    .chart-clear-btn:hover {
+      border-color: var(--color-error);
+      color: var(--color-error);
+    }
+
+    tr.row-dimmed td {
+      opacity: 0.4;
+    }
+
     .ai-badge-inline {
       display: inline-block;
       font-size: 0.6875rem;
@@ -1180,7 +1587,6 @@ export class Workbench implements OnInit, OnDestroy {
   viewingDetail: ShoeboxItemFull | null = null;
   detailColumns: string[] = [];
   selectedRows = new Set<number>();
-  private brushing = false;
   addingEvidence = false;
   evidenceText = '';
 
@@ -1188,15 +1594,20 @@ export class Workbench implements OnInit, OnDestroy {
   viewingEvidence: EvidenceItemFull | null = null;
   evidenceSourceShoebox: ShoeboxItemFull | null = null;
   evidenceSelectedRows = new Set<number>();
+  evidenceSourceExplanation = '';
+  evidenceSourceData: Record<string, any>[] = [];
   evidenceSourceColumns: string[] = [];
   verifyCountdown = 0;
   correctingEvidence = false;
   correctText = '';
   private verifyTimer: ReturnType<typeof setInterval> | null = null;
 
-  schemaData: SchematizationData = { frames: [], evidence: [], relationships: [] };
-  schemaEvidence: EvidenceItemSummary[] = [];
-  schemaDragover = false;
+  schemaData: SchematizationData = [];
+  schemaResolvedItems: ResolvedNode[] = [];
+  dropIndicator: DropIndicator | null = null;
+  editingFrameId: string | null = null;
+  editingDescId: string | null = null;
+  private dragoverRaf = false;
 
   newShoeboxIds = new Set<string>();
   unseenShoeboxIds = new Set<string>();
@@ -1219,6 +1630,7 @@ export class Workbench implements OnInit, OnDestroy {
     private shoeboxSvc: ShoeboxService,
     private evidenceSvc: EvidenceService,
     private schemaSvc: SchematizationService,
+    private cdr: ChangeDetectorRef,
   ) {}
 
   ngOnInit(): void {
@@ -1263,43 +1675,92 @@ export class Workbench implements OnInit, OnDestroy {
     });
   }
 
+  private markType(spec: Record<string, any>): string {
+    return typeof spec['mark'] === 'string' ? spec['mark'] : spec['mark']?.type ?? '';
+  }
+
+  private isPathMark(spec: Record<string, any>): boolean {
+    const m = this.markType(spec);
+    return m === 'line' || m === 'trail';
+  }
+
+  private stampData(
+    data: Record<string, any>[],
+    selectedRows: Set<number>,
+  ): Record<string, any>[] {
+    return data.map((row, i) => ({
+      ...row,
+      _vi: i,
+      _selected: selectedRows.has(i),
+    }));
+  }
+
+  private buildSpec(
+    spec: Record<string, any>,
+    stamped: Record<string, any>[],
+    selectedRows: Set<number>,
+    containerWidth: number,
+  ): Record<string, any> {
+    const hasSelection = selectedRows.size > 0;
+    const opacityEnc = hasSelection
+      ? { condition: { test: 'datum._selected', value: 1 }, value: 0.3 }
+      : undefined;
+    const base = {
+      width: Math.max(containerWidth, 200),
+      autosize: { type: 'fit', contains: 'padding' },
+      data: { values: stamped },
+      title: spec['title'],
+    } as Record<string, any>;
+
+    if (this.isPathMark(spec)) {
+      const enc = spec['encoding'] || {};
+      const trailEnc = { x: enc['x'], y: enc['y'] } as Record<string, any>;
+      const pointEnc = { x: enc['x'], y: enc['y'] } as Record<string, any>;
+      if (opacityEnc) {
+        trailEnc['opacity'] = { value: 0.3 };
+        pointEnc['opacity'] = opacityEnc;
+      }
+      base['layer'] = [
+        { mark: spec['mark'], encoding: trailEnc },
+        { mark: { type: 'point', size: 80, filled: true, cursor: 'pointer' }, encoding: pointEnc },
+      ];
+    } else {
+      const { params: _dropped, ...specNoParams } = spec;
+      base['mark'] = typeof specNoParams['mark'] === 'string'
+        ? { type: specNoParams['mark'], cursor: 'pointer' }
+        : { ...specNoParams['mark'], cursor: 'pointer' };
+      const enc = { ...(specNoParams['encoding'] || {}) };
+      if (opacityEnc) {
+        enc['opacity'] = opacityEnc;
+      }
+      base['encoding'] = enc;
+    }
+
+    return base;
+  }
+
   private renderSelectableChart(
     el: HTMLDivElement,
     spec: Record<string, any>,
     data: Record<string, any>[],
     selectedRows: Set<number>,
   ): void {
-    const stamped = data.map((row, i) => ({ ...row, _vi: i } as Record<string, any>));
+    const stamped = this.stampData(data, selectedRows);
     const containerWidth = el.clientWidth - 24;
-    const fullSpec = {
-      ...spec,
-      width: Math.max(containerWidth, 200),
-      autosize: { type: 'fit', contains: 'padding' },
-      data: { values: stamped },
-    } as VisualizationSpec;
+    const fullSpec = this.buildSpec(spec, stamped, selectedRows, containerWidth) as VisualizationSpec;
+    console.log('[vega-spec:shoebox]', fullSpec);
     embed(el, fullSpec, { actions: false, renderer: 'svg' }).then(({ view }) => {
-      view.addSignalListener('brush', (_name, value) => {
-        if (!value || !this.viewingDetail) return;
-        const fields = Object.keys(value);
-        if (fields.length === 0) return;
-        const brushed = new Set<number>();
-        for (let i = 0; i < stamped.length; i++) {
-          let inside = true;
-          for (const field of fields) {
-            const range = value[field];
-            if (!Array.isArray(range) || range.length !== 2) { inside = false; break; }
-            const v = stamped[i][field];
-            if (v == null) { inside = false; break; }
-            const numV = typeof v === 'string' ? new Date(v).getTime() : Number(v);
-            const lo = typeof range[0] === 'string' ? new Date(range[0]).getTime() : Number(range[0]);
-            const hi = typeof range[1] === 'string' ? new Date(range[1]).getTime() : Number(range[1]);
-            if (numV < Math.min(lo, hi) || numV > Math.max(lo, hi)) { inside = false; break; }
-          }
-          if (inside) brushed.add(i);
+      view.addEventListener('click', (_event, item) => {
+        if (item?.datum?._vi == null || !this.viewingDetail) return;
+        const idx = item.datum._vi as number;
+        if (this.selectedRows.has(idx)) {
+          this.selectedRows.delete(idx);
+        } else {
+          this.selectedRows.add(idx);
         }
-        const merged = new Set(this.selectedRows);
-        for (const idx of brushed) merged.add(idx);
-        this.selectedRows = merged;
+        this.selectedRows = new Set(this.selectedRows);
+        this.rerenderChart();
+        this.cdr.detectChanges();
       });
     }).catch(() => {});
   }
@@ -1310,23 +1771,26 @@ export class Workbench implements OnInit, OnDestroy {
     data: Record<string, any>[],
     selectedRows: Set<number>,
   ): void {
-    const stamped = data.map((row, i) => ({ ...row, _selected: selectedRows.has(i) }));
+    const stamped = this.stampData(data, selectedRows);
     const containerWidth = el.clientWidth - 24;
-    const { params: _dropped, ...specNoParams } = spec;
-    const fullSpec = {
-      ...specNoParams,
-      width: Math.max(containerWidth, 200),
-      autosize: { type: 'fit', contains: 'padding' },
-      data: { values: stamped },
-      encoding: {
-        ...(specNoParams['encoding'] || {}),
-        opacity: {
-          condition: { test: 'datum._selected', value: 1 },
-          value: 0.2,
-        },
-      },
-    } as VisualizationSpec;
+    const fullSpec = this.buildSpec(spec, stamped, selectedRows, containerWidth) as VisualizationSpec;
+    console.log('[vega-spec:evidence]', fullSpec);
     embed(el, fullSpec, { actions: false, renderer: 'svg' }).catch(() => {});
+  }
+
+  private rerenderChart(): void {
+    if (!this.chartContainerEl || !this.viewingDetail?.chart_spec) return;
+    this.renderSelectableChart(
+      this.chartContainerEl.nativeElement,
+      this.viewingDetail.chart_spec,
+      this.viewingDetail.result,
+      this.selectedRows,
+    );
+  }
+
+  clearSelection(): void {
+    this.selectedRows = new Set();
+    this.rerenderChart();
   }
 
   closeDetail(): void {
@@ -1339,6 +1803,12 @@ export class Workbench implements OnInit, OnDestroy {
   triggerAiSearch(): void {
     this.schemaSvc.triggerAiSearch(this.workspaceId).subscribe(() => {
       this.startCooking();
+    });
+  }
+
+  triggerAiExtract(): void {
+    this.schemaSvc.triggerAiExtract(this.workspaceId).subscribe(() => {
+      this.startEvidenceCooking();
     });
   }
 
@@ -1391,6 +1861,7 @@ export class Workbench implements OnInit, OnDestroy {
       this.selectedRows.add(index);
     }
     this.selectedRows = new Set(this.selectedRows);
+    this.rerenderChart();
   }
 
   toggleAllRows(): void {
@@ -1402,6 +1873,7 @@ export class Workbench implements OnInit, OnDestroy {
         this.viewingDetail.result.map((_, i) => i)
       );
     }
+    this.rerenderChart();
   }
 
   allRowsSelected(): boolean {
@@ -1466,13 +1938,39 @@ export class Workbench implements OnInit, OnDestroy {
   }
 
   get filteredEvidence(): EvidenceItemSummary[] {
-    const schemaIds = new Set(this.schemaData.evidence);
+    const schemaIds = new Set(allEvidenceIds(this.schemaData));
     return this.evidenceItems.filter((item) => !schemaIds.has(item.id));
   }
 
   private updateFilteredEvidence(): void {
-    const schemaIds = new Set(this.schemaData.evidence);
-    this.schemaEvidence = this.evidenceItems.filter((item) => schemaIds.has(item.id));
+    const evidenceMap = new Map(this.evidenceItems.map((e) => [e.id, e]));
+    this.schemaResolvedItems = this.resolveNodes(this.schemaData, evidenceMap);
+  }
+
+  private resolveNodes(
+    nodes: SchemaNode[],
+    evidenceMap: Map<string, EvidenceItemSummary>,
+  ): ResolvedNode[] {
+    return nodes.map((node) => {
+      const children = this.resolveNodes(node.children ?? [], evidenceMap);
+      if (node.type === 'evidence') {
+        return {
+          type: 'evidence' as const,
+          id: node.id,
+          rel: node.rel,
+          evidence: evidenceMap.get(node.id),
+          children,
+        };
+      }
+      return {
+        type: 'frame' as const,
+        id: node.id,
+        rel: node.rel,
+        title: node.title,
+        description: node.description,
+        children,
+      };
+    });
   }
 
   isDraggable(item: EvidenceItemSummary): boolean {
@@ -1480,27 +1978,153 @@ export class Workbench implements OnInit, OnDestroy {
   }
 
   onDragStart(event: DragEvent, item: EvidenceItemSummary): void {
-    event.dataTransfer?.setData('text/plain', item.id);
+    event.dataTransfer?.setData('application/evidence', item.id);
+  }
+
+  private draggingNodeId: string | null = null;
+
+  onSchemaDragStart(event: DragEvent, node: ResolvedNode): void {
+    event.stopPropagation();
+    this.draggingNodeId = node.id;
+    event.dataTransfer?.setData('application/schema-node', node.id);
+    event.dataTransfer!.effectAllowed = 'move';
   }
 
   onSchemaDragover(event: DragEvent): void {
     event.preventDefault();
-    this.schemaDragover = true;
+    if (this.dragoverRaf) return;
+    this.dragoverRaf = true;
+    requestAnimationFrame(() => {
+      this.dragoverRaf = false;
+      this.computeDropIndicator(event);
+    });
+  }
+
+  private computeDropIndicator(event: DragEvent): void {
+    const y = event.clientY;
+    const target = event.target as HTMLElement;
+    const nodeEl = target.closest('.schema-node[data-node-id]') as HTMLElement | null;
+
+    if (nodeEl) {
+      const rect = nodeEl.getBoundingClientRect();
+      const relY = (y - rect.top) / rect.height;
+      const nodeId = nodeEl.getAttribute('data-node-id')!;
+
+      if (this.draggingNodeId && this.isDescendantOrSelf(nodeId, this.draggingNodeId)) {
+        this.dropIndicator = null;
+        return;
+      }
+
+      if (relY < 0.25) {
+        const parentEl = nodeEl.parentElement?.closest(
+          '.frame-children[data-node-id], .evidence-children[data-node-id], .schema-drop-zone[data-node-id]'
+        ) as HTMLElement | null;
+        if (parentEl) {
+          const siblings = Array.from(parentEl.children).filter(c => c.classList.contains('schema-node'));
+          const idx = siblings.indexOf(nodeEl);
+          const pid = parentEl.getAttribute('data-node-id');
+          this.dropIndicator = { parentId: pid === 'root' ? null : pid, index: Math.max(0, idx) };
+          return;
+        }
+      }
+
+      const innerContainer = nodeEl.querySelector(
+        ':scope > .frame-children[data-node-id], :scope > .evidence-children[data-node-id]'
+      ) as HTMLElement | null;
+      if (innerContainer) {
+        this.setIndicatorFromContainer(innerContainer, y);
+      } else {
+        this.dropIndicator = { parentId: nodeId, index: 0 };
+      }
+      return;
+    }
+
+    const childrenEl = target.closest(
+      '.frame-children[data-node-id], .evidence-children[data-node-id]'
+    ) as HTMLElement | null;
+    if (childrenEl) {
+      this.setIndicatorFromContainer(childrenEl, y);
+      return;
+    }
+
+    const rootEl = target.closest('.schema-drop-zone[data-node-id]') as HTMLElement | null;
+    if (rootEl) {
+      this.setIndicatorFromContainer(rootEl, y);
+    } else {
+      this.dropIndicator = null;
+    }
+  }
+
+  private setIndicatorFromContainer(containerEl: HTMLElement, y: number): void {
+    const parentId = containerEl.getAttribute('data-node-id');
+    const isRoot = parentId === 'root';
+    const schemaChildren = Array.from(containerEl.children).filter(
+      (el) => el.classList.contains('schema-node')
+    );
+    let index = schemaChildren.length;
+    for (let i = 0; i < schemaChildren.length; i++) {
+      const rect = schemaChildren[i].getBoundingClientRect();
+      if (y < rect.top + rect.height / 2) {
+        index = i;
+        break;
+      }
+    }
+    this.dropIndicator = { parentId: isRoot ? null : parentId, index };
+  }
+
+  private isDescendantOrSelf(nodeId: string, ancestorId: string): boolean {
+    if (nodeId === ancestorId) return true;
+    const walk = (nodes: ResolvedNode[]): boolean => {
+      for (const n of nodes) {
+        if (n.id === ancestorId) {
+          return this.findInTree(n.children, nodeId);
+        }
+        if (walk(n.children)) return true;
+      }
+      return false;
+    };
+    return walk(this.schemaResolvedItems);
+  }
+
+  private findInTree(nodes: ResolvedNode[], id: string): boolean {
+    for (const n of nodes) {
+      if (n.id === id) return true;
+      if (this.findInTree(n.children, id)) return true;
+    }
+    return false;
   }
 
   onSchemaDragleave(event: DragEvent): void {
     const target = event.currentTarget as HTMLElement;
     const related = event.relatedTarget as Node | null;
     if (related && target.contains(related)) return;
-    this.schemaDragover = false;
+    this.dropIndicator = null;
+    this.draggingNodeId = null;
   }
 
   onSchemaDrop(event: DragEvent): void {
     event.preventDefault();
-    this.schemaDragover = false;
-    const evidenceId = event.dataTransfer?.getData('text/plain');
+    event.stopPropagation();
+    const indicator = this.dropIndicator;
+    this.dropIndicator = null;
+    this.draggingNodeId = null;
+
+    const schemaNodeId = event.dataTransfer?.getData('application/schema-node');
+    if (schemaNodeId) {
+      const parentId = indicator?.parentId ?? undefined;
+      const index = indicator?.index ?? undefined;
+      this.schemaSvc.moveNode(this.workspaceId, schemaNodeId, parentId, index).subscribe((resp) => {
+        this.schemaData = resp.data;
+        this.updateFilteredEvidence();
+      });
+      return;
+    }
+
+    const evidenceId = event.dataTransfer?.getData('application/evidence');
     if (!evidenceId) return;
-    this.schemaSvc.addEvidence(this.workspaceId, evidenceId).subscribe((resp) => {
+    const parentId = indicator?.parentId ?? undefined;
+    const index = indicator?.index ?? undefined;
+    this.schemaSvc.addEvidence(this.workspaceId, evidenceId, parentId, index).subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
       this.startCooking();
@@ -1508,18 +2132,72 @@ export class Workbench implements OnInit, OnDestroy {
     });
   }
 
-  removeFromSchema(event: Event, item: EvidenceItemSummary): void {
+  removeSchemaNode(event: Event, node: ResolvedNode): void {
     event.stopPropagation();
-    this.schemaSvc.removeEvidence(this.workspaceId, item.id).subscribe((resp) => {
+    if (node.type === 'frame') {
+      this.schemaSvc.removeFrame(this.workspaceId, node.id).subscribe((resp) => {
+        this.schemaData = resp.data;
+        this.updateFilteredEvidence();
+      });
+    } else {
+      this.schemaSvc.removeEvidence(this.workspaceId, node.id).subscribe((resp) => {
+        this.schemaData = resp.data;
+        this.updateFilteredEvidence();
+        if (allEvidenceIds(resp.data).length > 0) {
+          this.startCooking();
+          this.startEvidenceCooking();
+        } else {
+          this.stopCooking();
+          this.stopEvidenceCooking();
+        }
+      });
+    }
+  }
+
+  createNewFrame(): void {
+    this.schemaSvc.createFrame(this.workspaceId, 'Nova Hipótese').subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
-      if (resp.data.evidence.length > 0) {
-        this.startCooking();
-        this.startEvidenceCooking();
-      } else {
-        this.stopCooking();
-        this.stopEvidenceCooking();
+    });
+  }
+
+  startEditingFrame(frameId: string): void {
+    this.editingFrameId = frameId;
+    setTimeout(() => {
+      const input = document.querySelector('.frame-title-input') as HTMLInputElement | null;
+      input?.focus();
+      input?.select();
+    });
+  }
+
+  saveFrameTitle(event: Event, frameId: string): void {
+    const input = event.target as HTMLInputElement;
+    const title = input.value.trim() || 'Nova Hipótese';
+    this.editingFrameId = null;
+    this.schemaSvc.updateFrame(this.workspaceId, frameId, title).subscribe((resp) => {
+      this.schemaData = resp.data;
+      this.updateFilteredEvidence();
+    });
+  }
+
+  startEditingDesc(frameId: string): void {
+    this.editingDescId = frameId;
+    setTimeout(() => {
+      const textarea = document.querySelector('.frame-desc-input') as HTMLTextAreaElement | null;
+      if (textarea) {
+        textarea.focus();
+        textarea.select();
       }
+    });
+  }
+
+  saveFrameDesc(event: Event, frameId: string): void {
+    const textarea = event.target as HTMLTextAreaElement;
+    const description = textarea.value.trim();
+    this.editingDescId = null;
+    this.schemaSvc.updateFrame(this.workspaceId, frameId, undefined, description).subscribe((resp) => {
+      this.schemaData = resp.data;
+      this.updateFilteredEvidence();
     });
   }
 
@@ -1565,6 +2243,11 @@ export class Workbench implements OnInit, OnDestroy {
     return item.ai_authored && !item.approved;
   }
 
+  onEvidenceNodeClick(event: Event, item: EvidenceItemSummary): void {
+    event.stopPropagation();
+    this.viewEvidenceItem(item);
+  }
+
   viewEvidenceItem(item: EvidenceItemSummary): void {
     this.unseenEvidenceIds.delete(item.id);
     this.unseenEvidenceIds = new Set(this.unseenEvidenceIds);
@@ -1574,6 +2257,8 @@ export class Workbench implements OnInit, OnDestroy {
       this.correctText = '';
       this.startVerifyCountdown(this.isUncertain(full));
       this.shoeboxSvc.get(this.workspaceId, full.shoebox_id).subscribe((shoebox) => {
+        this.evidenceSourceShoebox = shoebox;
+        this.evidenceSelectedRows = new Set(full.rows);
         this.evidenceSourceExplanation = shoebox.explanation;
         this.evidenceSourceData = full.rows.map((i) => shoebox.result[i]).filter(Boolean);
         this.evidenceSourceColumns =
@@ -1586,7 +2271,9 @@ export class Workbench implements OnInit, OnDestroy {
 
   closeEvidenceDetail(): void {
     this.viewingEvidence = null;
+    this.evidenceSourceShoebox = null;
     this.evidenceSourceExplanation = '';
+    this.evidenceSourceData = [];
     this.correctingEvidence = false;
     this.correctText = '';
     this.clearVerifyTimer();

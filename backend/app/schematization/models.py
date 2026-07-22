@@ -13,6 +13,6 @@ class Schematization(Base):
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("workspace.id", ondelete="CASCADE"), primary_key=True
     )
-    data: Mapped[dict] = mapped_column(
-        JSON, nullable=False, default=dict
+    data: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list
     )
