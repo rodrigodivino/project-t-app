@@ -35,6 +35,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/web-config")
+def web_config() -> dict[str, bool]:
+    return {"production": PRODUCTION}
+
+
 if STATIC_DIR.is_dir():
     from fastapi.responses import FileResponse
 

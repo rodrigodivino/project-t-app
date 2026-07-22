@@ -1,7 +1,8 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { AuthService } from './auth/auth';
+import { WebConfigService } from './web-config';
 
 @Component({
   selector: 'app-access-gate',
@@ -162,15 +163,26 @@ import { AuthService } from './auth/auth';
     }
   `,
 })
-export class AccessGate {
+export class AccessGate implements OnInit {
   code = '';
   error = false;
   loading = false;
 
   constructor(
     private auth: AuthService,
-    private router: Router
+    private router: Router,
+    private config: WebConfigService,
   ) {}
+
+  ngOnInit(): void {
+    if (!this.config.production) {
+      this.router.navigate(['/prototype']);
+      return;
+    }
+    if (this.auth.isAuthenticated()) {
+      this.router.navigate(['/prototype']);
+    }
+  }
 
   submit(): void {
     if (!this.code.trim() || this.loading) return;

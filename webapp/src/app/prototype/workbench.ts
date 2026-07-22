@@ -1762,7 +1762,7 @@ export class Workbench implements OnInit, OnDestroy {
   private aiDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 
   schemaCooking = false;
-  private knownSuggestionIds = new Set<string>();
+  knownSuggestionIds = new Set<string>();
   private schemaCookingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(

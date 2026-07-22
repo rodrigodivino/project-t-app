@@ -1,10 +1,10 @@
 import { inject } from '@angular/core';
 import { CanActivateFn, Router } from '@angular/router';
 import { AuthService } from './auth';
-import { environment } from '../../environments/environment';
+import { WebConfigService } from '../web-config';
 
 export const authGuard: CanActivateFn = () => {
-  if (!environment.accessGate) {
+  if (!inject(WebConfigService).production) {
     return true;
   }
   const auth = inject(AuthService);
