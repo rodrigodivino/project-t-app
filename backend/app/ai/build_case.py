@@ -3,16 +3,15 @@ import threading
 import uuid
 from typing import Callable
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.ai import get_llm
 from app.database import SessionLocal
 from app.evidence import service as evidence_service
 from app.schematization import service as schematization_service
 from app.ai.read_and_extract import GLOSSARY
-from app.settings import AI_EFFORT, AI_MODEL, AI_THINKING, ANTHROPIC_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -188,15 +187,9 @@ def build_messages(
 def call_llm(
     schema_context: str, candidate_evidence: list[tuple[str, str]],
 ) -> BuildCaseSuggestions:
-    llm = ChatAnthropic(
-        model_name=AI_MODEL,
-        api_key=SecretStr(ANTHROPIC_API_KEY),
-        timeout=60,
-        stop=None,
-        thinking=AI_THINKING,
-        effort=AI_EFFORT,
+    structured = get_llm(timeout=60).with_structured_output(
+        BuildCaseSuggestions, method="json_schema",
     )
-    structured = llm.with_structured_output(BuildCaseSuggestions)
     messages = build_messages(schema_context, candidate_evidence)
     result = structured.invoke(messages)
     return result  # type: ignore[return-value]

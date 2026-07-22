@@ -6,13 +6,13 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Callable
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.ai import get_llm
 from app.database import SessionLocal
-from app.settings import AI_EFFORT, AI_MODEL, AI_THINKING, ANTHROPIC_API_KEY
+from app.settings import ANTHROPIC_API_KEY
 from app.evidence import service as evidence_service
 from app.shoebox import service as shoebox_service
 from app.sources import service as sources_service
@@ -165,15 +165,7 @@ def build_prompt(schematization_context: str, existing_items: list[dict]) -> str
 def call_llm(
     schematization_context: str, existing_items: list[dict],
 ) -> SearchQueries:
-    llm = ChatAnthropic(
-        model_name=AI_MODEL,
-        api_key=SecretStr(ANTHROPIC_API_KEY),
-        timeout=30,
-        stop=None,
-        thinking=AI_THINKING,
-        effort=AI_EFFORT,
-    )
-    structured = llm.with_structured_output(SearchQueries)
+    structured = get_llm().with_structured_output(SearchQueries, method="json_schema")
     result = structured.invoke([
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(
@@ -232,7 +224,30 @@ window.
 - Mantenha a especificação simples. Sem camadas (layer), sem \
 composições (concat/facet), sem seleções interativas, sem params.
 - Se os resultados contêm apenas 1 linha ou são puramente textuais \
-(ex: mensagens sem agregação), retorne spec como null."""
+(ex: mensagens sem agregação), retorne spec como null.
+
+Exemplos de especificação para cada tipo de mark:
+
+Bar horizontal (1 dimensão + 1 métrica):
+{"mark": {"type": "bar"}, "encoding": {"y": {"field": "location", \
+"type": "nominal", "sort": "-x"}, "x": {"field": "total", \
+"type": "quantitative"}}, "title": "Total por bairro"}
+
+Line (1 temporal + 1 métrica):
+{"mark": {"type": "line"}, "encoding": {"x": {"field": "time", \
+"type": "temporal"}, "y": {"field": "total", \
+"type": "quantitative"}}, "title": "Volume ao longo do tempo"}
+
+Point / dispersão (2 numéricas):
+{"mark": {"type": "point"}, "encoding": {"x": {"field": "metrica_a", \
+"type": "quantitative"}, "y": {"field": "metrica_b", \
+"type": "quantitative"}}, "title": "Dispersão A vs B"}
+
+Rect / heatmap (2 dimensões + 1 métrica):
+{"mark": {"type": "rect"}, "encoding": {"x": {"field": "hora", \
+"type": "ordinal", "sort": null}, "y": {"field": "location", \
+"type": "nominal"}, "color": {"field": "total", \
+"type": "quantitative"}}, "title": "Atividade por bairro e hora"}"""
 
 
 class ChartSpec(BaseModel):
@@ -256,14 +271,7 @@ def _chart_messages(sql: str, explanation: str, rows: list[dict]) -> list:
 
 
 def _chart_llm() -> Any:
-    return ChatAnthropic(
-        model_name=AI_MODEL,
-        api_key=SecretStr(ANTHROPIC_API_KEY),
-        timeout=30,
-        stop=None,
-        thinking=AI_THINKING,
-        effort=AI_EFFORT,
-    ).with_structured_output(ChartSpec)
+    return get_llm().with_structured_output(ChartSpec, method="json_schema")
 
 
 def generate_chart(

@@ -4,15 +4,15 @@ import threading
 import uuid
 from typing import Callable
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.ai import get_llm
 from app.database import SessionLocal
 from app.evidence import service as evidence_service
 from app.schematization import service as schematization_service
-from app.settings import AI_EFFORT, AI_MODEL, AI_THINKING, ANTHROPIC_API_KEY
+from app.settings import ANTHROPIC_API_KEY
 from app.shoebox import service as shoebox_service
 
 logger = logging.getLogger(__name__)
@@ -150,15 +150,9 @@ def build_messages(
 
 
 def call_llm_batch(inputs: list[list]) -> list[ExtractionResult]:
-    llm = ChatAnthropic(
-        model_name=AI_MODEL,
-        api_key=SecretStr(ANTHROPIC_API_KEY),
-        timeout=60,
-        stop=None,
-        thinking=AI_THINKING,
-        effort=AI_EFFORT,
+    structured = get_llm(timeout=60).with_structured_output(
+        ExtractionResult, method="json_schema",
     )
-    structured = llm.with_structured_output(ExtractionResult)
     return structured.batch(inputs)
 
 
@@ -219,17 +213,14 @@ def run(
             items = shoebox_loader(db, workspace_id)
 
         if not items:
-            logger.warning("read_and_extract EARLY EXIT: no shoebox items")
-            return
+also, why            return
 
         inputs = [
             build_messages(schema_context, evidence_titles, _item_to_dict(item))
             for item in items
         ]
 
-        logger.warning("read_and_extract LLM input count=%d, first=%s", len(inputs), inputs[0] if inputs else "EMPTY")
         results = llm_caller(inputs)
-        logger.warning("read_and_extract LLM results count=%d, results=%s", len(results), results)
 
         new_evidence_ids: list[uuid.UUID] = []
         for item, extraction in zip(items, results):
