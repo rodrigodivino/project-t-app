@@ -21,11 +21,13 @@ import {
   RelType,
   allEvidenceIds,
 } from './schematization.service';
+import { maxOverlap } from './text-overlap';
 
 interface ResolvedNode {
   type: 'evidence' | 'frame';
   id: string;
   rel?: RelType;
+  suggestion?: boolean;
   evidence?: EvidenceItemSummary;
   title?: string;
   description?: string;
@@ -42,16 +44,13 @@ interface DropIndicator {
   imports: [SourcesModal, FormsModule, NgTemplateOutlet],
   template: `
     <div class="workbench">
-      <header class="workbench-header">
-        <h1>Prototype</h1>
-      </header>
       <div class="workbench-board">
         <section class="board-column">
           <h2>
             Resultados
             <button class="ai-search-btn"
-                    [class.ai-search-cooking]="aiCooking"
-                    [disabled]="aiCooking"
+                    [class.ai-search-cooking]="shoeboxCooking"
+                    [disabled]="shoeboxCooking"
                     (click)="triggerAiSearch()"
                     title="Busca IA">
               <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
@@ -60,7 +59,7 @@ interface DropIndicator {
               </svg>
             </button>
           </h2>
-          @if (aiCooking) {
+          @if (shoeboxCooking) {
             <div class="ai-shimmer"></div>
           }
           <div class="column-body">
@@ -73,10 +72,10 @@ interface DropIndicator {
               </svg>
               Consultar Base de Dados
             </button>
-            @if (shoeboxItems.length === 0) {
+            @if (sortedShoebox.length === 0) {
               <p class="placeholder">Nenhum resultado adicionado</p>
             }
-            @for (item of shoeboxItems; track item.id) {
+            @for (item of sortedShoebox; track item.id) {
               <div class="shoebox-card"
                    [class.shoebox-card-ai]="item.ai_authored"
                    [class.shoebox-card-new]="newShoeboxIds.has(item.id)"
@@ -93,16 +92,17 @@ interface DropIndicator {
                       <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/>
                     </svg>
                   } @else {
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                         stroke="currentColor" stroke-width="1.5"
-                         stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                      <circle cx="12" cy="7" r="4"/>
+                    <svg width="20" height="20" viewBox="0 0 24 24"
+                         fill="currentColor" stroke="none">
+                      <path d="M12 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm-8 18v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2z"/>
                     </svg>
                   }
                 </div>
                 <div class="card-info">
                   <span class="card-name" [title]="item.explanation">{{ item.explanation }}</span>
+                  @if (shoeboxScores.get(item.id); as score) {
+                    <span class="overlap-tag">{{ Math.round(score * 100) }}% pertinente</span>
+                  }
                 </div>
                 <button
                   class="card-remove"
@@ -126,7 +126,7 @@ interface DropIndicator {
             Evidências
             <button class="ai-search-btn"
                     [class.ai-search-cooking]="evidenceCooking"
-                    [disabled]="evidenceCooking"
+                    [disabled]="evidenceCooking || shoeboxItems.length === 0"
                     (click)="triggerAiExtract()"
                     title="Extrair evidências IA">
               <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
@@ -139,15 +139,15 @@ interface DropIndicator {
             <div class="ai-shimmer"></div>
           }
           <div class="column-body">
-            @if (filteredEvidence.length === 0) {
+            @if (sortedEvidence.length === 0) {
               <p class="placeholder">Nenhuma evidência extraída</p>
             }
-            @for (item of filteredEvidence; track item.id) {
+            @for (item of sortedEvidence; track item.id) {
               <div
                 class="evidence-card"
                 [class.evidence-ai]="isUncertain(item)"
                 [class.evidence-card-new]="newEvidenceIds.has(item.id)"
-                [draggable]="isDraggable(item)"
+                [draggable]="true"
                 (dragstart)="onDragStart($event, item)"
                 (click)="viewEvidenceItem(item)"
               >
@@ -159,21 +159,22 @@ interface DropIndicator {
                     <svg class="sparkle-icon"
                          [class.sparkle-pulse]="newEvidenceIds.has(item.id)"
                          width="20" height="20" viewBox="0 0 24 24"
-                         [attr.fill]="isUncertain(item) ? 'var(--color-warning)' : 'var(--color-text-secondary)'"
+                         [attr.fill]="isUncertain(item) ? 'var(--color-warning)' : '#16a34a'"
                          stroke="none">
                       <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/>
                     </svg>
                   } @else {
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                         stroke="currentColor" stroke-width="1.5"
-                         stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                      <circle cx="12" cy="7" r="4"/>
+                    <svg width="20" height="20" viewBox="0 0 24 24"
+                         fill="currentColor" stroke="none">
+                      <path d="M12 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm-8 18v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2z"/>
                     </svg>
                   }
                 </div>
                 <div class="card-info">
                   <span class="card-name" [title]="item.content">{{ item.content }}</span>
+                  @if (evidenceScores.get(item.id); as score) {
+                    <span class="overlap-tag">{{ Math.round(score * 100) }}% pertinente</span>
+                  }
                 </div>
                 <button
                   class="card-remove"
@@ -198,17 +199,45 @@ interface DropIndicator {
           (dragleave)="onSchemaDragleave($event)"
           (drop)="onSchemaDrop($event)"
         >
-          <h2>Esquematização</h2>
+          <h2>
+            Esquematização
+            <button class="ai-search-btn"
+                    [class.ai-search-cooking]="schemaCooking"
+                    [disabled]="schemaCooking || evidenceItems.length === 0 || knownSuggestionIds.size >= 5"
+                    (click)="triggerAiBuildCase()"
+                    title="Sugerir esquematização IA">
+              <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
+                   fill="currentColor" stroke="none">
+                <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/>
+              </svg>
+            </button>
+          </h2>
+          @if (schemaCooking) {
+            <div class="ai-shimmer"></div>
+          }
           <div class="column-body schema-drop-zone" data-node-id="root">
 
             <ng-template #schemaNodeTpl let-node>
               @if (node.type === 'evidence' && node.evidence) {
                 <div class="schema-node schema-node-evidence"
-                     [draggable]="true"
+                     [class.schema-node-cancelled]="isCancelled(node)"
+                     [class.schema-node-suggestion]="node.suggestion"
+                     [draggable]="!node.suggestion"
                      (dragstart)="onSchemaDragStart($event, node)"
                      [attr.data-node-id]="node.id"
-                     (click)="onEvidenceNodeClick($event, node.evidence)">
+                     (click)="onEvidenceNodeClick($event, node.evidence, node)">
                   <div class="evidence-row">
+                    @if (node.rel) {
+                      <button class="rel-tag"
+                              [class.rel-tag-cancel]="node.rel === 'cancel'"
+                              [class.rel-tag-question]="node.rel === 'question'"
+                              [class.rel-tag-elaborate]="node.rel === 'elaborate'"
+                              (click)="cycleRel($event, node)"
+                              [title]="relLabel(node.rel)"
+                              [disabled]="node.suggestion">
+                        {{ relIcon(node.rel) }}
+                      </button>
+                    }
                     <div class="card-info">
                       <span class="card-name" [title]="node.evidence.content">{{ node.evidence.content }}</span>
                     </div>
@@ -238,10 +267,21 @@ interface DropIndicator {
               }
               @if (node.type === 'frame') {
                 <div class="schema-node schema-node-frame"
+                     [class.schema-node-cancelled]="isCancelled(node)"
                      [draggable]="true"
                      (dragstart)="onSchemaDragStart($event, node)"
                      [attr.data-node-id]="node.id">
                   <div class="frame-header">
+                    @if (node.rel) {
+                      <button class="rel-tag"
+                              [class.rel-tag-cancel]="node.rel === 'cancel'"
+                              [class.rel-tag-question]="node.rel === 'question'"
+                              [class.rel-tag-elaborate]="node.rel === 'elaborate'"
+                              (click)="cycleRel($event, node)"
+                              [title]="relLabel(node.rel)">
+                        {{ relIcon(node.rel) }}
+                      </button>
+                    }
                     @if (editingFrameId === node.id) {
                       <input class="frame-title-input"
                              [value]="node.title"
@@ -300,9 +340,7 @@ interface DropIndicator {
               }
             </ng-template>
 
-            @if (schemaResolvedItems.length === 0 && !dropIndicator) {
-              <p class="placeholder">Arraste evidências para cá</p>
-            }
+            <p class="frame-placeholder"><a class="frame-link" (click)="createNewFrame()">Crie hipóteses</a> e arraste evidências a elas</p>
             @if (dropIndicator?.parentId === null && dropIndicator?.index === 0) {
               <div class="drop-line"></div>
             }
@@ -459,17 +497,6 @@ interface DropIndicator {
       <div class="detail-backdrop" (click)="closeEvidenceDetail()"></div>
       <div class="detail-modal">
         <div class="detail-panel">
-          <header class="detail-header">
-            <button class="back-btn" (click)="closeEvidenceDetail()">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                   stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round">
-                <line x1="19" y1="12" x2="5" y2="12"/>
-                <polyline points="12 19 5 12 12 5"/>
-              </svg>
-              Voltar
-            </button>
-          </header>
           <div class="detail-body">
             <div class="detail-field">
               <label>Evidência</label>
@@ -521,7 +548,7 @@ interface DropIndicator {
               </div>
             }
           </div>
-          @if (isUncertain(viewingEvidence)) {
+          @if (isUncertain(viewingEvidence) || viewingSuggestionNodeId) {
             <div class="detail-footer">
               @if (correctingEvidence) {
                 <div class="footer-form">
@@ -543,10 +570,29 @@ interface DropIndicator {
                     </button>
                   </div>
                 </div>
+              } @else if (confirmingReject) {
+                <span class="footer-hint">Se você rejeitar, essa evidência será removida da lista de evidências. Confirmar?</span>
+                <div class="footer-actions">
+                  <button class="action-btn action-correct" (click)="confirmingReject = false">
+                    Cancelar
+                  </button>
+                  <button class="action-btn action-reject-confirm" (click)="rejectEvidence()">
+                    Confirmar rejeição
+                  </button>
+                </div>
               } @else {
                 <span class="footer-hint" [class.footer-hint-hidden]="verifyCountdown === 0">A IA pode cometer erros, verifique se a evidência condiz com os dados antes de aprovar</span>
                 <div class="footer-actions">
-                  <button class="action-btn action-reject" (click)="rejectEvidence()">
+                  <button class="action-btn action-correct" (click)="closeEvidenceDetail()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="19" y1="12" x2="5" y2="12"/>
+                      <polyline points="12 19 5 12 12 5"/>
+                    </svg>
+                    Voltar
+                  </button>
+                  <button class="action-btn action-reject" (click)="confirmingReject = true">
                     Rejeitar
                   </button>
                   <button class="action-btn action-correct" (click)="startCorrecting()">
@@ -576,20 +622,6 @@ interface DropIndicator {
       height: 100vh;
     }
 
-    .workbench-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 16px 24px;
-      border-bottom: 1px solid var(--color-border);
-      background: var(--color-surface);
-    }
-
-    .workbench-header h1 {
-      font-size: 1.25rem;
-      font-weight: 600;
-    }
-
     .workbench-board {
       display: flex;
       flex: 1;
@@ -597,7 +629,7 @@ interface DropIndicator {
     }
 
     .board-column {
-      width: 300px;
+      width: 20%;
       flex-shrink: 0;
       background: var(--color-surface);
       border-right: 1px solid var(--color-border);
@@ -718,6 +750,9 @@ interface DropIndicator {
       outline: none;
       padding: 0;
       font-family: inherit;
+      width: 100%;
+      min-width: 0;
+      flex: 1;
     }
 
     .frame-description {
@@ -779,11 +814,82 @@ interface DropIndicator {
       margin: 0;
     }
 
+    .frame-link {
+      color: var(--color-frame-text, #6D28D9);
+      cursor: pointer;
+      text-decoration: underline;
+      opacity: 1;
+    }
+
+    .frame-link:hover {
+      opacity: 0.8;
+    }
+
     .drop-line {
       height: 2px;
       background: var(--color-accent);
       border-radius: 1px;
       flex-shrink: 0;
+    }
+
+    .rel-tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border: none;
+      border-radius: 3px;
+      color: white;
+      font-size: 0.75rem;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+      flex-shrink: 0;
+      padding: 0;
+      transition: opacity 0.15s;
+    }
+
+    .rel-tag:hover {
+      opacity: 0.8;
+    }
+
+    .rel-tag-elaborate {
+      background: #16a34a;
+    }
+
+    .rel-tag-question {
+      background: var(--color-warning);
+    }
+
+    .rel-tag-cancel {
+      background: var(--color-error);
+    }
+
+    .schema-node-suggestion {
+      background: var(--color-warning-bg, #FEF3C7);
+      border: 2px dashed var(--color-warning, #D97706);
+      cursor: default;
+    }
+
+    .schema-node-suggestion[draggable="false"] {
+      cursor: default;
+    }
+
+    .schema-node-suggestion .rel-tag:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .schema-node-cancelled > .evidence-row,
+    .schema-node-cancelled > .frame-header,
+    .schema-node-cancelled > .frame-description {
+      opacity: 0.45;
+    }
+
+    .schema-node-cancelled > .evidence-row .card-name,
+    .schema-node-cancelled > .frame-header .frame-title {
+      text-decoration: line-through;
     }
 
     .schema-column {
@@ -914,7 +1020,6 @@ interface DropIndicator {
       padding: 8px 10px;
       background: var(--color-surface);
       border-radius: var(--radius-sm);
-      border-left: 3px solid var(--color-text-secondary);
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
       cursor: pointer;
       transition: box-shadow 0.15s, transform 0.15s;
@@ -949,7 +1054,7 @@ interface DropIndicator {
       animation: shimmer-sweep 2s ease-in-out infinite;
     }
 
-    .shoebox-card-ai {
+    .shoebox-card {
       border-left: 3px solid var(--color-accent);
     }
 
@@ -994,12 +1099,16 @@ interface DropIndicator {
     }
 
     .evidence-card .card-icon {
-      color: var(--color-text-secondary);
+      color: #16a34a;
     }
 
     .evidence-card-new {
       animation: card-fade-in 0.8s ease-out,
                  glow-fade 2.5s ease-out forwards;
+    }
+
+    .evidence-card {
+      border-left: 3px solid #16a34a;
     }
 
     .evidence-ai {
@@ -1436,8 +1545,8 @@ interface DropIndicator {
     }
 
     .action-approve {
-      border: 1px solid #22c55e;
-      background: #22c55e;
+      border: 1px solid #16a34a;
+      background: #16a34a;
       color: white;
     }
 
@@ -1474,6 +1583,17 @@ interface DropIndicator {
     .action-reject:hover {
       border-color: var(--color-error);
       color: var(--color-error);
+    }
+
+    .action-reject-confirm {
+      border: 1px solid var(--color-error);
+      background: var(--color-error);
+      color: white;
+    }
+
+    .action-reject-confirm:hover {
+      opacity: 0.9;
+      box-shadow: var(--shadow-sm);
     }
 
     .action-correct-cancel {
@@ -1562,6 +1682,14 @@ interface DropIndicator {
       border-radius: 3px;
       margin-top: 8px;
     }
+
+    .overlap-tag {
+      font-size: 0.625rem;
+      color: var(--color-text-secondary);
+      opacity: 0.7;
+      margin-top: 2px;
+      display: block;
+    }
   `,
 })
 export class Workbench implements OnInit, OnDestroy {
@@ -1581,6 +1709,7 @@ export class Workbench implements OnInit, OnDestroy {
     }
   }
 
+  Math = Math;
   workspaceId = '';
   sourcesOpen = false;
   shoeboxItems: ShoeboxItemSummary[] = [];
@@ -1599,31 +1728,42 @@ export class Workbench implements OnInit, OnDestroy {
   evidenceSourceColumns: string[] = [];
   verifyCountdown = 0;
   correctingEvidence = false;
+  confirmingReject = false;
   correctText = '';
   private verifyTimer: ReturnType<typeof setInterval> | null = null;
 
   schemaData: SchematizationData = [];
   schemaResolvedItems: ResolvedNode[] = [];
+  sortedShoebox: ShoeboxItemSummary[] = [];
+  sortedEvidence: EvidenceItemSummary[] = [];
+  shoeboxScores = new Map<string, number>();
+  evidenceScores = new Map<string, number>();
   dropIndicator: DropIndicator | null = null;
   editingFrameId: string | null = null;
   editingDescId: string | null = null;
+  private pendingDrop: { evidenceId: string; parentId?: string; index?: number } | null = null;
+  viewingSuggestionNodeId: string | null = null;
   private dragoverRaf = false;
 
   newShoeboxIds = new Set<string>();
   unseenShoeboxIds = new Set<string>();
-  aiCooking = false;
+  shoeboxCooking = false;
   private knownShoeboxIds = new Set<string>();
   private shoeboxInitialLoad = true;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private cookingTimeout: ReturnType<typeof setTimeout> | null = null;
+  private shoeboxCookingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   newEvidenceIds = new Set<string>();
   unseenEvidenceIds = new Set<string>();
   evidenceCooking = false;
   private knownEvidenceIds = new Set<string>();
   private evidenceInitialLoad = true;
-  private evidencePollTimer: ReturnType<typeof setInterval> | null = null;
   private evidenceCookingTimeout: ReturnType<typeof setTimeout> | null = null;
+  private aiDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  schemaCooking = false;
+  private knownSuggestionIds = new Set<string>();
+  private schemaCookingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private route: ActivatedRoute,
@@ -1638,8 +1778,7 @@ export class Workbench implements OnInit, OnDestroy {
     this.loadShoebox();
     this.loadEvidence();
     this.loadSchematization();
-    this.pollTimer = setInterval(() => this.loadShoebox(), 5000);
-    this.evidencePollTimer = setInterval(() => this.loadEvidence(), 5000);
+    this.pollTimer = setInterval(() => this.pollAll(), 5000);
   }
 
   ngOnDestroy(): void {
@@ -1647,17 +1786,17 @@ export class Workbench implements OnInit, OnDestroy {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
-    if (this.cookingTimeout !== null) {
-      clearTimeout(this.cookingTimeout);
-      this.cookingTimeout = null;
-    }
-    if (this.evidencePollTimer !== null) {
-      clearInterval(this.evidencePollTimer);
-      this.evidencePollTimer = null;
+    if (this.shoeboxCookingTimeout !== null) {
+      clearTimeout(this.shoeboxCookingTimeout);
+      this.shoeboxCookingTimeout = null;
     }
     if (this.evidenceCookingTimeout !== null) {
       clearTimeout(this.evidenceCookingTimeout);
       this.evidenceCookingTimeout = null;
+    }
+    if (this.schemaCookingTimeout !== null) {
+      clearTimeout(this.schemaCookingTimeout);
+      this.schemaCookingTimeout = null;
     }
     this.clearVerifyTimer();
   }
@@ -1802,14 +1941,54 @@ export class Workbench implements OnInit, OnDestroy {
 
   triggerAiSearch(): void {
     this.schemaSvc.triggerAiSearch(this.workspaceId).subscribe(() => {
-      this.startCooking();
+      this.startShoeboxCooking();
     });
   }
 
   triggerAiExtract(): void {
+    if (this.shoeboxItems.length === 0) return;
     this.schemaSvc.triggerAiExtract(this.workspaceId).subscribe(() => {
       this.startEvidenceCooking();
     });
+  }
+
+  triggerAiBuildCase(): void {
+    if (this.evidenceItems.length === 0) return;
+    if (this.knownSuggestionIds.size >= 5) return;
+    this.schemaSvc.triggerAiBuildCase(this.workspaceId).subscribe(() => {
+      this.startSchemaCooking();
+    });
+  }
+
+  private scheduleAiFire(schemaData: SchematizationData): void {
+    if (schemaData.length === 0) {
+      this.stopShoeboxCooking();
+      this.stopEvidenceCooking();
+      this.stopSchemaCooking();
+      return;
+    }
+    const canSuggest = this.evidenceItems.length > 0
+      && this.knownSuggestionIds.size < 5;
+    this.startShoeboxCooking();
+    if (this.shoeboxItems.length > 0) {
+      this.startEvidenceCooking();
+    }
+    if (canSuggest) {
+      this.startSchemaCooking();
+    }
+    if (this.aiDebounceTimeout !== null) {
+      clearTimeout(this.aiDebounceTimeout);
+    }
+    this.aiDebounceTimeout = setTimeout(() => {
+      this.aiDebounceTimeout = null;
+      this.schemaSvc.triggerAiSearch(this.workspaceId).subscribe();
+      if (this.shoeboxItems.length > 0) {
+        this.schemaSvc.triggerAiExtract(this.workspaceId).subscribe();
+      }
+      if (canSuggest) {
+        this.schemaSvc.triggerAiBuildCase(this.workspaceId).subscribe();
+      }
+    }, 3000);
   }
 
   loadShoebox(): void {
@@ -1818,6 +1997,7 @@ export class Workbench implements OnInit, OnDestroy {
         this.shoeboxItems = items;
         this.knownShoeboxIds = new Set(items.map((i) => i.id));
         this.shoeboxInitialLoad = false;
+        this.resortShoebox();
         return;
       }
       const freshAiIds: string[] = [];
@@ -1828,8 +2008,9 @@ export class Workbench implements OnInit, OnDestroy {
       }
       this.shoeboxItems = items;
       this.knownShoeboxIds = new Set(items.map((i) => i.id));
+      this.resortShoebox();
       if (freshAiIds.length > 0) {
-        this.stopCooking();
+        this.stopShoeboxCooking();
         this.startEvidenceCooking();
         for (const id of freshAiIds) {
           this.newShoeboxIds.add(id);
@@ -1851,6 +2032,7 @@ export class Workbench implements OnInit, OnDestroy {
     event.stopPropagation();
     this.shoeboxSvc.remove(this.workspaceId, item.id).subscribe(() => {
       this.shoeboxItems = this.shoeboxItems.filter((i) => i.id !== item.id);
+      this.sortedShoebox = this.sortedShoebox.filter((i) => i.id !== item.id);
     });
   }
 
@@ -1937,14 +2119,68 @@ export class Workbench implements OnInit, OnDestroy {
     });
   }
 
-  get filteredEvidence(): EvidenceItemSummary[] {
-    const schemaIds = new Set(allEvidenceIds(this.schemaData));
-    return this.evidenceItems.filter((item) => !schemaIds.has(item.id));
-  }
-
   private updateFilteredEvidence(): void {
+    this.knownSuggestionIds = this.collectSuggestionIds(this.schemaData);
     const evidenceMap = new Map(this.evidenceItems.map((e) => [e.id, e]));
     this.schemaResolvedItems = this.resolveNodes(this.schemaData, evidenceMap);
+    this.recomputeScores(evidenceMap);
+  }
+
+  private recomputeScores(evidenceMap: Map<string, EvidenceItemSummary>): void {
+    const schemaTexts = this.collectSchemaTexts(this.schemaData, evidenceMap);
+    const schemaIds = new Set(allEvidenceIds(this.schemaData));
+
+    this.shoeboxScores.clear();
+    if (schemaTexts.length > 0) {
+      for (const item of this.shoeboxItems) {
+        this.shoeboxScores.set(item.id, maxOverlap(item.explanation, schemaTexts));
+      }
+      this.sortedShoebox = [...this.shoeboxItems].sort(
+        (a, b) => (this.shoeboxScores.get(b.id) ?? 0) - (this.shoeboxScores.get(a.id) ?? 0)
+      );
+    } else {
+      this.sortedShoebox = [...this.shoeboxItems];
+    }
+
+    const filtered = this.evidenceItems.filter((item) => !schemaIds.has(item.id));
+    this.evidenceScores.clear();
+    if (schemaTexts.length > 0) {
+      for (const item of filtered) {
+        this.evidenceScores.set(item.id, maxOverlap(item.content, schemaTexts));
+      }
+      this.sortedEvidence = filtered.sort(
+        (a, b) => (this.evidenceScores.get(b.id) ?? 0) - (this.evidenceScores.get(a.id) ?? 0)
+      );
+    } else {
+      this.sortedEvidence = filtered;
+    }
+  }
+
+  private collectSchemaTexts(
+    nodes: SchemaNode[],
+    evidenceMap: Map<string, EvidenceItemSummary>,
+  ): string[] {
+    const texts: string[] = [];
+    const walk = (ns: SchemaNode[]) => {
+      for (const node of ns) {
+        if (node.type === 'evidence' && node.suggestion) continue;
+        if (node.type === 'frame') {
+          const combined = [node.title, node.description].filter(Boolean).join(' ');
+          if (combined) texts.push(combined);
+        } else if (node.type === 'evidence') {
+          const ev = evidenceMap.get(node.id);
+          if (ev?.content) texts.push(ev.content);
+        }
+        if (node.children) walk(node.children);
+      }
+    };
+    walk(nodes);
+    return texts;
+  }
+
+  private resortShoebox(): void {
+    const evidenceMap = new Map(this.evidenceItems.map((e) => [e.id, e]));
+    this.recomputeScores(evidenceMap);
   }
 
   private resolveNodes(
@@ -1958,6 +2194,7 @@ export class Workbench implements OnInit, OnDestroy {
           type: 'evidence' as const,
           id: node.id,
           rel: node.rel,
+          suggestion: node.suggestion,
           evidence: evidenceMap.get(node.id),
           children,
         };
@@ -1973,8 +2210,56 @@ export class Workbench implements OnInit, OnDestroy {
     });
   }
 
-  isDraggable(item: EvidenceItemSummary): boolean {
-    return !this.isUncertain(item);
+  isCancelled(node: ResolvedNode): boolean {
+    return node.children.some(c => c.rel === 'cancel' && !this.isCancelled(c));
+  }
+
+  relIcon(rel: RelType): string {
+    switch (rel) {
+      case 'elaborate': return '+';
+      case 'question': return '?';
+      case 'cancel': return '✕';
+    }
+  }
+
+  relLabel(rel: RelType): string {
+    switch (rel) {
+      case 'elaborate': return 'Elabora';
+      case 'question': return 'Questiona';
+      case 'cancel': return 'Cancela';
+    }
+  }
+
+  cycleRel(event: Event, node: ResolvedNode): void {
+    event.stopPropagation();
+    if (node.suggestion) return;
+    const cycle: RelType[] = ['elaborate', 'question', 'cancel'];
+    const idx = cycle.indexOf(node.rel ?? 'elaborate');
+    const nextRel = cycle[(idx + 1) % cycle.length];
+    const location = this.findParentAndIndex(node.id, this.schemaResolvedItems);
+    if (!location) return;
+    this.schemaSvc.moveNode(
+      this.workspaceId, node.id, location.parentId, location.index, nextRel
+    ).subscribe((resp) => {
+      this.schemaData = resp.data;
+      this.updateFilteredEvidence();
+      this.scheduleAiFire(resp.data);
+    });
+  }
+
+  private findParentAndIndex(
+    nodeId: string,
+    nodes: ResolvedNode[],
+    parentId?: string,
+  ): { parentId: string | undefined; index: number } | null {
+    for (let i = 0; i < nodes.length; i++) {
+      if (nodes[i].id === nodeId) {
+        return { parentId, index: i };
+      }
+      const found = this.findParentAndIndex(nodeId, nodes[i].children, nodes[i].id);
+      if (found) return found;
+    }
+    return null;
   }
 
   onDragStart(event: DragEvent, item: EvidenceItemSummary): void {
@@ -1984,6 +2269,10 @@ export class Workbench implements OnInit, OnDestroy {
   private draggingNodeId: string | null = null;
 
   onSchemaDragStart(event: DragEvent, node: ResolvedNode): void {
+    if (node.suggestion) {
+      event.preventDefault();
+      return;
+    }
     event.stopPropagation();
     this.draggingNodeId = node.id;
     event.dataTransfer?.setData('application/schema-node', node.id);
@@ -2048,7 +2337,7 @@ export class Workbench implements OnInit, OnDestroy {
     }
 
     const rootEl = target.closest('.schema-drop-zone[data-node-id]') as HTMLElement | null;
-    if (rootEl) {
+    if (rootEl && this.draggingNodeId) {
       this.setIndicatorFromContainer(rootEl, y);
     } else {
       this.dropIndicator = null;
@@ -2116,6 +2405,7 @@ export class Workbench implements OnInit, OnDestroy {
       this.schemaSvc.moveNode(this.workspaceId, schemaNodeId, parentId, index).subscribe((resp) => {
         this.schemaData = resp.data;
         this.updateFilteredEvidence();
+        this.scheduleAiFire(resp.data);
       });
       return;
     }
@@ -2123,12 +2413,20 @@ export class Workbench implements OnInit, OnDestroy {
     const evidenceId = event.dataTransfer?.getData('application/evidence');
     if (!evidenceId) return;
     const parentId = indicator?.parentId ?? undefined;
+    if (parentId === undefined) return;
     const index = indicator?.index ?? undefined;
+
+    const item = this.evidenceItems.find((e) => e.id === evidenceId);
+    if (item && this.isUncertain(item)) {
+      this.pendingDrop = { evidenceId, parentId, index };
+      this.viewEvidenceItem(item);
+      return;
+    }
+
     this.schemaSvc.addEvidence(this.workspaceId, evidenceId, parentId, index).subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
-      this.startCooking();
-      this.startEvidenceCooking();
+      this.scheduleAiFire(resp.data);
     });
   }
 
@@ -2138,18 +2436,13 @@ export class Workbench implements OnInit, OnDestroy {
       this.schemaSvc.removeFrame(this.workspaceId, node.id).subscribe((resp) => {
         this.schemaData = resp.data;
         this.updateFilteredEvidence();
+        this.scheduleAiFire(resp.data);
       });
     } else {
       this.schemaSvc.removeEvidence(this.workspaceId, node.id).subscribe((resp) => {
         this.schemaData = resp.data;
         this.updateFilteredEvidence();
-        if (allEvidenceIds(resp.data).length > 0) {
-          this.startCooking();
-          this.startEvidenceCooking();
-        } else {
-          this.stopCooking();
-          this.stopEvidenceCooking();
-        }
+        this.scheduleAiFire(resp.data);
       });
     }
   }
@@ -2177,6 +2470,7 @@ export class Workbench implements OnInit, OnDestroy {
     this.schemaSvc.updateFrame(this.workspaceId, frameId, title).subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
+      this.scheduleAiFire(resp.data);
     });
   }
 
@@ -2198,25 +2492,26 @@ export class Workbench implements OnInit, OnDestroy {
     this.schemaSvc.updateFrame(this.workspaceId, frameId, undefined, description).subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
+      this.scheduleAiFire(resp.data);
     });
   }
 
-  private startCooking(): void {
-    this.aiCooking = true;
-    if (this.cookingTimeout !== null) {
-      clearTimeout(this.cookingTimeout);
+  private startShoeboxCooking(): void {
+    this.shoeboxCooking = true;
+    if (this.shoeboxCookingTimeout !== null) {
+      clearTimeout(this.shoeboxCookingTimeout);
     }
-    this.cookingTimeout = setTimeout(() => {
-      this.aiCooking = false;
-      this.cookingTimeout = null;
+    this.shoeboxCookingTimeout = setTimeout(() => {
+      this.shoeboxCooking = false;
+      this.shoeboxCookingTimeout = null;
     }, 30000);
   }
 
-  private stopCooking(): void {
-    this.aiCooking = false;
-    if (this.cookingTimeout !== null) {
-      clearTimeout(this.cookingTimeout);
-      this.cookingTimeout = null;
+  private stopShoeboxCooking(): void {
+    this.shoeboxCooking = false;
+    if (this.shoeboxCookingTimeout !== null) {
+      clearTimeout(this.shoeboxCookingTimeout);
+      this.shoeboxCookingTimeout = null;
     }
   }
 
@@ -2239,12 +2534,133 @@ export class Workbench implements OnInit, OnDestroy {
     }
   }
 
+  private startSchemaCooking(): void {
+    this.schemaCooking = true;
+    if (this.schemaCookingTimeout !== null) {
+      clearTimeout(this.schemaCookingTimeout);
+    }
+    this.schemaCookingTimeout = setTimeout(() => {
+      this.schemaCooking = false;
+      this.schemaCookingTimeout = null;
+    }, 30000);
+  }
+
+  private stopSchemaCooking(): void {
+    this.schemaCooking = false;
+    if (this.schemaCookingTimeout !== null) {
+      clearTimeout(this.schemaCookingTimeout);
+      this.schemaCookingTimeout = null;
+    }
+  }
+
+  private collectSuggestionIds(nodes: SchemaNode[]): Set<string> {
+    const ids = new Set<string>();
+    for (const node of nodes) {
+      if (node.type === 'evidence' && node.suggestion) {
+        ids.add(node.id);
+      }
+      if (node.children) {
+        for (const id of this.collectSuggestionIds(node.children)) {
+          ids.add(id);
+        }
+      }
+    }
+    return ids;
+  }
+
+  private pollAll(): void {
+    this.schemaSvc.poll(this.workspaceId).subscribe((resp) => {
+      // shoebox
+      if (this.shoeboxInitialLoad) {
+        this.shoeboxItems = resp.shoebox;
+        this.knownShoeboxIds = new Set(resp.shoebox.map((i) => i.id));
+        this.shoeboxInitialLoad = false;
+      } else {
+        const freshShoeboxAiIds: string[] = [];
+        for (const item of resp.shoebox) {
+          if (!this.knownShoeboxIds.has(item.id) && item.ai_authored) {
+            freshShoeboxAiIds.push(item.id);
+          }
+        }
+        this.shoeboxItems = resp.shoebox;
+        this.knownShoeboxIds = new Set(resp.shoebox.map((i) => i.id));
+        if (freshShoeboxAiIds.length > 0) {
+          this.stopShoeboxCooking();
+          this.startEvidenceCooking();
+          for (const id of freshShoeboxAiIds) {
+            this.newShoeboxIds.add(id);
+            this.unseenShoeboxIds.add(id);
+          }
+          this.newShoeboxIds = new Set(this.newShoeboxIds);
+          this.unseenShoeboxIds = new Set(this.unseenShoeboxIds);
+          setTimeout(() => {
+            for (const id of freshShoeboxAiIds) {
+              this.newShoeboxIds.delete(id);
+            }
+            this.newShoeboxIds = new Set(this.newShoeboxIds);
+          }, 2500);
+        }
+      }
+
+      // evidence
+      if (this.evidenceInitialLoad) {
+        this.evidenceItems = resp.evidence;
+        this.knownEvidenceIds = new Set(resp.evidence.map((i) => i.id));
+        this.evidenceInitialLoad = false;
+      } else {
+        const freshEvidenceAiIds: string[] = [];
+        for (const item of resp.evidence) {
+          if (!this.knownEvidenceIds.has(item.id) && item.ai_authored) {
+            freshEvidenceAiIds.push(item.id);
+          }
+        }
+        this.evidenceItems = resp.evidence;
+        this.knownEvidenceIds = new Set(resp.evidence.map((i) => i.id));
+        if (freshEvidenceAiIds.length > 0) {
+          this.stopEvidenceCooking();
+          for (const id of freshEvidenceAiIds) {
+            this.newEvidenceIds.add(id);
+            this.unseenEvidenceIds.add(id);
+          }
+          this.newEvidenceIds = new Set(this.newEvidenceIds);
+          this.unseenEvidenceIds = new Set(this.unseenEvidenceIds);
+          setTimeout(() => {
+            for (const id of freshEvidenceAiIds) {
+              this.newEvidenceIds.delete(id);
+            }
+            this.newEvidenceIds = new Set(this.newEvidenceIds);
+          }, 2500);
+        }
+      }
+
+      // schematization
+      if (!this.editingFrameId && !this.editingDescId) {
+        const newSuggestionIds = this.collectSuggestionIds(resp.schematization.data);
+        let hasNewSuggestion = false;
+        for (const id of newSuggestionIds) {
+          if (!this.knownSuggestionIds.has(id)) {
+            hasNewSuggestion = true;
+            break;
+          }
+        }
+        this.knownSuggestionIds = newSuggestionIds;
+        this.schemaData = resp.schematization.data;
+        if (hasNewSuggestion) {
+          this.stopSchemaCooking();
+        }
+      }
+
+      this.updateFilteredEvidence();
+    });
+  }
+
   isUncertain(item: { ai_authored: boolean; approved: boolean }): boolean {
     return item.ai_authored && !item.approved;
   }
 
-  onEvidenceNodeClick(event: Event, item: EvidenceItemSummary): void {
+  onEvidenceNodeClick(event: Event, item: EvidenceItemSummary, node?: ResolvedNode): void {
     event.stopPropagation();
+    this.viewingSuggestionNodeId = node?.suggestion ? node.id : null;
     this.viewEvidenceItem(item);
   }
 
@@ -2270,18 +2686,38 @@ export class Workbench implements OnInit, OnDestroy {
   }
 
   closeEvidenceDetail(): void {
+    this.pendingDrop = null;
+    this.viewingSuggestionNodeId = null;
     this.viewingEvidence = null;
     this.evidenceSourceShoebox = null;
     this.evidenceSourceExplanation = '';
     this.evidenceSourceData = [];
     this.correctingEvidence = false;
+    this.confirmingReject = false;
     this.correctText = '';
     this.clearVerifyTimer();
   }
 
   approveEvidence(): void {
     if (!this.viewingEvidence) return;
+    const drop = this.pendingDrop;
+    const suggestionNodeId = this.viewingSuggestionNodeId;
+    this.pendingDrop = null;
+    this.viewingSuggestionNodeId = null;
     this.evidenceSvc.approve(this.workspaceId, this.viewingEvidence.id).subscribe(() => {
+      if (suggestionNodeId) {
+        this.schemaSvc.approveSuggestion(this.workspaceId, suggestionNodeId).subscribe((resp) => {
+          this.schemaData = resp.data;
+          this.updateFilteredEvidence();
+          this.scheduleAiFire(resp.data);
+        });
+      } else if (drop) {
+        this.schemaSvc.addEvidence(this.workspaceId, drop.evidenceId, drop.parentId, drop.index).subscribe((resp) => {
+          this.schemaData = resp.data;
+          this.updateFilteredEvidence();
+          this.scheduleAiFire(resp.data);
+        });
+      }
       this.closeEvidenceDetail();
       this.loadEvidence();
     });
@@ -2289,7 +2725,16 @@ export class Workbench implements OnInit, OnDestroy {
 
   rejectEvidence(): void {
     if (!this.viewingEvidence) return;
+    const suggestionNodeId = this.viewingSuggestionNodeId;
+    this.pendingDrop = null;
+    this.viewingSuggestionNodeId = null;
     this.evidenceSvc.reject(this.workspaceId, this.viewingEvidence.id).subscribe(() => {
+      if (suggestionNodeId) {
+        this.schemaSvc.removeEvidence(this.workspaceId, suggestionNodeId).subscribe((resp) => {
+          this.schemaData = resp.data;
+          this.updateFilteredEvidence();
+        });
+      }
       this.closeEvidenceDetail();
       this.loadEvidence();
     });
@@ -2308,9 +2753,26 @@ export class Workbench implements OnInit, OnDestroy {
 
   saveCorrectedEvidence(): void {
     if (!this.viewingEvidence || !this.correctText.trim()) return;
+    const drop = this.pendingDrop;
+    const suggestionNodeId = this.viewingSuggestionNodeId;
+    this.pendingDrop = null;
+    this.viewingSuggestionNodeId = null;
     this.evidenceSvc
       .correct(this.workspaceId, this.viewingEvidence.id, this.correctText.trim())
       .subscribe(() => {
+        if (suggestionNodeId) {
+          this.schemaSvc.approveSuggestion(this.workspaceId, suggestionNodeId).subscribe((resp) => {
+            this.schemaData = resp.data;
+            this.updateFilteredEvidence();
+            this.scheduleAiFire(resp.data);
+          });
+        } else if (drop) {
+          this.schemaSvc.addEvidence(this.workspaceId, drop.evidenceId, drop.parentId, drop.index).subscribe((resp) => {
+            this.schemaData = resp.data;
+            this.updateFilteredEvidence();
+            this.scheduleAiFire(resp.data);
+          });
+        }
         this.closeEvidenceDetail();
         this.loadEvidence();
       });
@@ -2342,6 +2804,7 @@ export class Workbench implements OnInit, OnDestroy {
     event.stopPropagation();
     this.evidenceSvc.remove(this.workspaceId, item.id).subscribe(() => {
       this.evidenceItems = this.evidenceItems.filter((i) => i.id !== item.id);
+      this.sortedEvidence = this.sortedEvidence.filter((i) => i.id !== item.id);
     });
   }
 }

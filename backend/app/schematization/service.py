@@ -1,19 +1,13 @@
-import threading
-import time
 import uuid
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.ai import read_and_extract, search_and_query
+from app.ai import build_case, read_and_extract, search_and_query
 from app.schematization.models import Schematization
 from app import settings
 
 EMPTY_DATA: list = []
-
-_dirty: dict[uuid.UUID, Any] = {}
-_dirty_lock = threading.Lock()
-_ticker_started = False
 
 
 def _normalize_data(data: Any) -> list:
@@ -30,7 +24,7 @@ def _normalize_data(data: Any) -> list:
 def _all_evidence_ids(tree: list) -> list[str]:
     ids: list[str] = []
     for node in tree:
-        if node.get("type") == "evidence":
+        if node.get("type") == "evidence" and not node.get("suggestion"):
             ids.append(node["id"])
         for child in node.get("children", []):
             ids.extend(_all_evidence_ids([child]))
@@ -107,6 +101,7 @@ def add_evidence(
     parent_id: uuid.UUID | None = None,
     index: int | None = None,
     rel: str = "elaborate",
+    suggestion: bool = False,
 ) -> Schematization:
     row = get_or_create(db, workspace_id)
     eid = str(evidence_id)
@@ -115,6 +110,8 @@ def add_evidence(
     _find_and_remove(tree, eid)
 
     node: dict = {"type": "evidence", "id": eid}
+    if suggestion:
+        node["suggestion"] = True
     if parent_id is not None:
         node["rel"] = rel
 
@@ -133,7 +130,6 @@ def add_evidence(
     row.data = tree
     db.commit()
     db.refresh(row)
-    _mark_dirty(workspace_id, row.data)
     return row
 
 
@@ -146,7 +142,6 @@ def remove_evidence(
     row.data = tree
     db.commit()
     db.refresh(row)
-    _mark_dirty(workspace_id, row.data)
     return row
 
 
@@ -194,6 +189,26 @@ def update_frame(
     return row
 
 
+def approve_suggestion(
+    db: Session,
+    workspace_id: uuid.UUID,
+    node_id: uuid.UUID,
+) -> Schematization:
+    row = get_or_create(db, workspace_id)
+    nid = str(node_id)
+    tree = _deep_copy_tree(row.data)
+    node = _find_node(tree, nid)
+    if node is None:
+        raise ValueError(f"Node {nid} not found")
+    if not node.get("suggestion"):
+        raise ValueError(f"Node {nid} is not a suggestion")
+    node.pop("suggestion", None)
+    row.data = tree
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def move_node(
     db: Session,
     workspace_id: uuid.UUID,
@@ -205,6 +220,10 @@ def move_node(
     row = get_or_create(db, workspace_id)
     nid = str(node_id)
     tree = _deep_copy_tree(row.data)
+
+    moving = _find_node(tree, nid)
+    if moving is not None and moving.get("suggestion"):
+        raise ValueError("Cannot move a suggestion node")
 
     if parent_id is not None:
         pid = str(parent_id)
@@ -233,7 +252,6 @@ def move_node(
     row.data = tree
     db.commit()
     db.refresh(row)
-    _mark_dirty(workspace_id, row.data)
     return row
 
 
@@ -258,7 +276,6 @@ def remove_node(
     row.data = tree
     db.commit()
     db.refresh(row)
-    _mark_dirty(workspace_id, row.data)
     return row
 
 
@@ -272,38 +289,45 @@ def trigger_search(db: Session, workspace_id: uuid.UUID) -> None:
 def trigger_extract(db: Session, workspace_id: uuid.UUID) -> None:
     if not settings.ANTHROPIC_API_KEY:
         return
+    from app.shoebox import service as shoebox_service
+    if not shoebox_service.list_items(db, workspace_id):
+        return
     read_and_extract.fire(workspace_id)
 
 
-def _mark_dirty(workspace_id: uuid.UUID, data: Any) -> None:
+def trigger_build_case(
+    db: Session,
+    workspace_id: uuid.UUID,
+    evidence_ids: list[uuid.UUID] | None = None,
+) -> None:
     if not settings.ANTHROPIC_API_KEY:
         return
-    tree = _normalize_data(data)
-    if not _all_evidence_ids(tree):
+    from app.evidence import service as evidence_service
+    if not evidence_service.list_items(db, workspace_id):
         return
-    global _ticker_started
-    with _dirty_lock:
-        _dirty[workspace_id] = data
-        if not _ticker_started:
-            _ticker_started = True
-            threading.Thread(target=_tick_loop, daemon=True).start()
+    build_case.fire(workspace_id, evidence_ids)
 
 
-def _tick_loop() -> None:
-    while True:
-        time.sleep(3)
-        with _dirty_lock:
-            batch = dict(_dirty)
-            _dirty.clear()
-        for wid, data in batch.items():
-            search_and_query.fire(wid, data)
-            read_and_extract.fire(wid)
+
+REL_LABELS = {
+    "elaborate": "elabora",
+    "question": "questiona",
+    "cancel": "cancela",
+}
 
 
 def serialize_for_llm(tree: list, evidence_map: dict[str, str]) -> str:
-    lines: list[str] = []
+    lines: list[str] = [
+        "Tipos de relação entre nós:",
+        "- elaborate: a evidência apoia ou detalha o nó pai",
+        "- question: a evidência questiona ou desafia o nó pai",
+        "- cancel: a evidência invalida o nó pai",
+        "",
+    ]
     loose: list[str] = []
     for node in tree:
+        if node.get("suggestion"):
+            continue
         if node.get("type") == "frame":
             _serialize_frame(node, lines, evidence_map, indent=0)
         elif node.get("type") == "evidence":
@@ -316,6 +340,28 @@ def serialize_for_llm(tree: list, evidence_map: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _count_children_by_rel(node: dict) -> dict[str, int]:
+    counts = {"elaborate": 0, "question": 0, "cancel": 0}
+    for child in node.get("children", []):
+        if child.get("suggestion"):
+            continue
+        if child.get("type") == "evidence":
+            rel = child.get("rel", "elaborate")
+            if rel in counts:
+                counts[rel] += 1
+    return counts
+
+
+def _format_balance(counts: dict[str, int]) -> str:
+    total = sum(counts.values())
+    if total == 0:
+        return "Cobertura: nenhuma evidência"
+    parts = []
+    for rel, label in REL_LABELS.items():
+        parts.append(f"{counts.get(rel, 0)}× {label}")
+    return f"Cobertura: {', '.join(parts)}"
+
+
 def _serialize_frame(
     node: dict, lines: list[str], evidence_map: dict[str, str], indent: int,
 ) -> None:
@@ -324,11 +370,15 @@ def _serialize_frame(
     desc = node.get("description", "")
     if desc:
         lines.append(f"{prefix}  Descrição: {desc}")
+    counts = _count_children_by_rel(node)
+    lines.append(f"{prefix}  {_format_balance(counts)}")
     for child in node.get("children", []):
+        if child.get("suggestion"):
+            continue
         if child.get("type") == "evidence":
             content = evidence_map.get(child["id"], "?")
-            rel = child.get("rel", "")
-            rel_label = f"[{rel}] " if rel else ""
-            lines.append(f"{prefix}  - {rel_label}{content}")
+            rel = child.get("rel", "elaborate")
+            label = REL_LABELS.get(rel, rel)
+            lines.append(f"{prefix}  - [{label}] {content}")
         elif child.get("type") == "frame":
             _serialize_frame(child, lines, evidence_map, indent + 1)

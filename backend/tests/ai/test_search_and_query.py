@@ -1,6 +1,7 @@
 import time
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from app.ai.search_and_query import (
     SearchQueries,
@@ -12,24 +13,26 @@ from app.ai.search_and_query import (
 )
 
 
-SAMPLE_DATA = {"frames": [], "evidence": ["ev-1"], "relationships": []}
+SAMPLE_SCHEMA_TEXT = "Frame: Hipótese\n  - [elabora] ev-1"
+SAMPLE_SCHEMA_TREE = [
+    {"type": "frame", "id": "f1", "title": "Hipótese", "description": "",
+     "children": [{"type": "evidence", "id": "ev-1", "rel": "elaborate"}]},
+]
 
 
 def test_build_prompt_contains_schematization():
-    prompt = build_prompt(SAMPLE_DATA, [])
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [])
     assert "ev-1" in prompt
     assert "post_rede_social_himark" in prompt
 
 
 def test_build_prompt_is_nonempty():
-    prompt = build_prompt(
-        {"frames": [], "evidence": [], "relationships": []}, [],
-    )
+    prompt = build_prompt("", [])
     assert len(prompt) > 0
 
 
 def test_build_prompt_empty_shoebox_message():
-    prompt = build_prompt(SAMPLE_DATA, [])
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [])
     assert "vazio" in prompt.lower()
 
 
@@ -41,7 +44,7 @@ def test_build_prompt_includes_existing_items():
             "sample_rows": [{"count": 42}],
         },
     ]
-    prompt = build_prompt(SAMPLE_DATA, existing)
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, existing)
     assert "SELECT COUNT(*)" in prompt
     assert "Contagem total" in prompt
     assert "42" in prompt
@@ -55,6 +58,16 @@ class FakeResult:
         return [(1, "hello world")]
 
 
+class FakeQuery:
+    def __getattr__(self, name):
+        def method(*args, **kwargs):
+            return self
+        return method
+
+    def all(self):
+        return []
+
+
 class FakeSession:
     def __init__(self):
         self.added: list = []
@@ -62,6 +75,9 @@ class FakeSession:
 
     def execute(self, stmt):
         return FakeResult()
+
+    def query(self, *args, **kwargs):
+        return FakeQuery()
 
     def add(self, item):
         self.added.append(item)
@@ -79,7 +95,7 @@ class FakeSession:
         self.closed = True
 
 
-def fake_llm(data: dict, existing: list[dict]) -> SearchQueries:
+def fake_llm(data: str, existing: list[dict]) -> SearchQueries:
     return SearchQueries(queries=[
         SearchQuery(
             sql="SELECT id, message FROM post_rede_social_himark LIMIT 5",
@@ -97,7 +113,7 @@ def test_run_creates_shoebox_items():
     ws_id = uuid.uuid4()
     run(
         ws_id,
-        SAMPLE_DATA,
+        SAMPLE_SCHEMA_TREE,
         llm_caller=fake_llm,
         session_factory=lambda: session,
         items_loader=lambda db, ws: [],
@@ -128,7 +144,7 @@ def test_run_continues_on_query_failure():
     ws_id = uuid.uuid4()
     run(
         ws_id,
-        SAMPLE_DATA,
+        SAMPLE_SCHEMA_TREE,
         llm_caller=fake_llm,
         session_factory=lambda: session,
         items_loader=lambda db, ws: [],
@@ -138,14 +154,14 @@ def test_run_continues_on_query_failure():
 
 
 def test_run_handles_empty_queries():
-    def empty_llm(data: dict, existing: list[dict]) -> SearchQueries:
+    def empty_llm(data: str, existing: list[dict]) -> SearchQueries:
         return SearchQueries(queries=[])
 
     session = FakeSession()
     ws_id = uuid.uuid4()
     run(
         ws_id,
-        SAMPLE_DATA,
+        SAMPLE_SCHEMA_TREE,
         llm_caller=empty_llm,
         session_factory=lambda: session,
         items_loader=lambda db, ws: [],
@@ -157,7 +173,7 @@ def test_run_handles_empty_queries():
 def test_run_passes_existing_items_to_llm():
     received = {}
 
-    def capturing_llm(data: dict, existing: list[dict]) -> SearchQueries:
+    def capturing_llm(data: str, existing: list[dict]) -> SearchQueries:
         received["data"] = data
         received["existing"] = existing
         return SearchQueries(queries=[])
@@ -169,12 +185,13 @@ def test_run_passes_existing_items_to_llm():
     ws_id = uuid.uuid4()
     run(
         ws_id,
-        SAMPLE_DATA,
+        SAMPLE_SCHEMA_TREE,
         llm_caller=capturing_llm,
         session_factory=lambda: session,
         items_loader=lambda db, ws: existing_items,
     )
-    assert received["data"] == SAMPLE_DATA
+    assert isinstance(received["data"], str)
+    assert "Hipótese" in received["data"]
     assert received["existing"] == existing_items
 
 
@@ -182,11 +199,34 @@ def test_clean_rows_serializes_datetime():
     rows = [
         {"hour": datetime(2020, 4, 7, 8, 0), "count": 605},
         {"id": uuid.UUID("12345678-1234-5678-1234-567812345678"), "val": "ok"},
+        {"avg_length": Decimal("199.9"), "total": Decimal("42")},
     ]
     cleaned = _clean_rows(rows)
     assert cleaned[0]["hour"] == "2020-04-07T08:00:00"
     assert cleaned[0]["count"] == 605
     assert cleaned[1]["id"] == "12345678-1234-5678-1234-567812345678"
+    assert cleaned[2]["avg_length"] == 199.9
+    assert isinstance(cleaned[2]["avg_length"], float)
+    assert cleaned[2]["total"] == 42.0
+
+
+def test_prompt_includes_balance_annotation():
+    schema_tree = [
+        {"type": "frame", "id": "f1", "title": "Hipótese", "description": "",
+         "children": [
+             {"type": "evidence", "id": "ev-1", "rel": "elaborate"},
+             {"type": "evidence", "id": "ev-2", "rel": "elaborate"},
+         ]},
+    ]
+    from app.schematization.service import _normalize_data, serialize_for_llm
+    from app.evidence import service as evidence_service
+    tree = _normalize_data(schema_tree)
+    evidence_map = {"ev-1": "fact one", "ev-2": "fact two"}
+    schema_context = serialize_for_llm(tree, evidence_map)
+    prompt = build_prompt(schema_context, [])
+    assert "Cobertura:" in prompt
+    assert "2× elabora" in prompt
+    assert "0× questiona" in prompt
 
 
 def test_fire_returns_immediately():
@@ -198,6 +238,6 @@ def test_fire_returns_immediately():
         return fake_llm(data, existing)
 
     start = time.monotonic()
-    fire(ws_id, SAMPLE_DATA)
+    fire(ws_id, SAMPLE_SCHEMA_TREE)
     elapsed = time.monotonic() - start
     assert elapsed < 0.2

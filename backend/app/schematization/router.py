@@ -8,11 +8,13 @@ from app.auth.dependency import require_auth
 from app.database import get_db
 from app.schematization.service import (
     add_evidence,
+    approve_suggestion,
     create_frame,
     get_or_create,
     move_node,
     remove_evidence,
     remove_node,
+    trigger_build_case,
     trigger_extract,
     trigger_search,
     update_frame,
@@ -37,6 +39,7 @@ class AddEvidenceRequest(BaseModel):
     parent_id: uuid.UUID | None = None
     index: int | None = None
     rel: str = "elaborate"
+    suggestion: bool = False
 
 
 class CreateFrameRequest(BaseModel):
@@ -67,7 +70,8 @@ def add_ev(
 ) -> SchematizationResponse:
     try:
         row = add_evidence(
-            db, ws_id, body.evidence_id, body.parent_id, body.index, body.rel
+            db, ws_id, body.evidence_id, body.parent_id, body.index, body.rel,
+            body.suggestion,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -131,6 +135,22 @@ def move_nd(
     return SchematizationResponse.model_validate(row)
 
 
+@router.patch(
+    "/nodes/{node_id}/approve-suggestion",
+    response_model=SchematizationResponse,
+)
+def approve_sug(
+    ws_id: uuid.UUID,
+    node_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> SchematizationResponse:
+    try:
+        row = approve_suggestion(db, ws_id, node_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return SchematizationResponse.model_validate(row)
+
+
 @router.post("/ai-search", status_code=202)
 def ai_search(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
     trigger_search(db, ws_id)
@@ -140,4 +160,10 @@ def ai_search(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
 @router.post("/ai-extract", status_code=202)
 def ai_extract(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
     trigger_extract(db, ws_id)
+    return {"status": "accepted"}
+
+
+@router.post("/ai-build-case", status_code=202)
+def ai_build_case(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+    trigger_build_case(db, ws_id)
     return {"status": "accepted"}

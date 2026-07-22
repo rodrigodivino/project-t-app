@@ -3,15 +3,18 @@ from unittest.mock import MagicMock
 
 from app.schematization.service import (
     _all_evidence_ids,
+    _count_children_by_rel,
     _find_and_remove,
     _find_node,
     _normalize_data,
     add_evidence,
+    approve_suggestion,
     create_frame,
     get_or_create,
     move_node,
     remove_evidence,
     remove_node,
+    serialize_for_llm,
     update_frame,
 )
 
@@ -294,3 +297,161 @@ def test_remove_node_splices_children():
     assert ids == ["before", eid1, eid2, "after"]
     assert "rel" not in result.data[1]
     assert "rel" not in result.data[2]
+
+
+def test_all_evidence_ids_skips_suggestions():
+    tree = [
+        {"type": "evidence", "id": "e1"},
+        {"type": "evidence", "id": "e2", "suggestion": True},
+        {"type": "frame", "id": "f1", "title": "X", "children": [
+            {"type": "evidence", "id": "e3", "rel": "elaborate"},
+            {"type": "evidence", "id": "e4", "rel": "elaborate", "suggestion": True},
+        ]},
+    ]
+    assert _all_evidence_ids(tree) == ["e1", "e3"]
+
+
+def test_add_evidence_suggestion():
+    db = MagicMock()
+    ws_id = uuid.uuid4()
+    ev_id = uuid.uuid4()
+    existing = MagicMock()
+    existing.data = []
+    db.get.return_value = existing
+    result = add_evidence(db, ws_id, ev_id, suggestion=True)
+    tree = result.data
+    assert len(tree) == 1
+    assert tree[0]["suggestion"] is True
+
+
+def test_add_evidence_no_suggestion_flag_by_default():
+    db = MagicMock()
+    ws_id = uuid.uuid4()
+    ev_id = uuid.uuid4()
+    existing = MagicMock()
+    existing.data = []
+    db.get.return_value = existing
+    result = add_evidence(db, ws_id, ev_id)
+    assert "suggestion" not in result.data[0]
+
+
+def test_approve_suggestion():
+    db = MagicMock()
+    ws_id = uuid.uuid4()
+    eid = str(uuid.uuid4())
+    existing = MagicMock()
+    existing.data = [
+        {"type": "evidence", "id": eid, "suggestion": True},
+    ]
+    db.get.return_value = existing
+    result = approve_suggestion(db, ws_id, uuid.UUID(eid))
+    assert "suggestion" not in result.data[0]
+
+
+def test_approve_suggestion_not_found():
+    db = MagicMock()
+    ws_id = uuid.uuid4()
+    existing = MagicMock()
+    existing.data = []
+    db.get.return_value = existing
+    try:
+        approve_suggestion(db, ws_id, uuid.uuid4())
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+
+def test_approve_suggestion_not_a_suggestion():
+    db = MagicMock()
+    ws_id = uuid.uuid4()
+    eid = str(uuid.uuid4())
+    existing = MagicMock()
+    existing.data = [{"type": "evidence", "id": eid}]
+    db.get.return_value = existing
+    try:
+        approve_suggestion(db, ws_id, uuid.UUID(eid))
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+
+def test_move_node_rejects_suggestion():
+    db = MagicMock()
+    ws_id = uuid.uuid4()
+    eid = str(uuid.uuid4())
+    fid = str(uuid.uuid4())
+    existing = MagicMock()
+    existing.data = [
+        {"type": "evidence", "id": eid, "suggestion": True},
+        {"type": "frame", "id": fid, "title": "H", "children": []},
+    ]
+    db.get.return_value = existing
+    try:
+        move_node(db, ws_id, uuid.UUID(eid), parent_id=uuid.UUID(fid))
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "suggestion" in str(e).lower()
+
+
+def test_count_children_by_rel():
+    node = {
+        "type": "frame", "id": "f1", "title": "H", "children": [
+            {"type": "evidence", "id": "e1", "rel": "elaborate"},
+            {"type": "evidence", "id": "e2", "rel": "elaborate"},
+            {"type": "evidence", "id": "e3", "rel": "question"},
+            {"type": "evidence", "id": "e4", "rel": "cancel", "suggestion": True},
+        ],
+    }
+    counts = _count_children_by_rel(node)
+    assert counts == {"elaborate": 2, "question": 1, "cancel": 0}
+
+
+def test_count_children_by_rel_empty():
+    node = {"type": "frame", "id": "f1", "title": "H", "children": []}
+    counts = _count_children_by_rel(node)
+    assert counts == {"elaborate": 0, "question": 0, "cancel": 0}
+
+
+def test_serialize_for_llm_includes_balance():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "H1", "description": "", "children": [
+            {"type": "evidence", "id": "e1", "rel": "elaborate"},
+            {"type": "evidence", "id": "e2", "rel": "question"},
+        ]},
+    ]
+    evidence_map = {"e1": "fact one", "e2": "fact two"}
+    result = serialize_for_llm(tree, evidence_map)
+    assert "Cobertura:" in result
+    assert "1× elabora" in result
+    assert "1× questiona" in result
+    assert "0× cancela" in result
+
+
+def test_serialize_for_llm_empty_frame_balance():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "H1", "description": "", "children": []},
+    ]
+    result = serialize_for_llm(tree, {})
+    assert "nenhuma evidência" in result
+
+
+def test_serialize_for_llm_excludes_suggestions():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "H1", "description": "", "children": [
+            {"type": "evidence", "id": "e1", "rel": "elaborate"},
+            {"type": "evidence", "id": "e2", "rel": "elaborate", "suggestion": True},
+        ]},
+        {"type": "evidence", "id": "e3"},
+        {"type": "evidence", "id": "e4", "suggestion": True},
+    ]
+    evidence_map = {
+        "e1": "fact one",
+        "e2": "suggested fact",
+        "e3": "loose fact",
+        "e4": "suggested loose",
+    }
+    result = serialize_for_llm(tree, evidence_map)
+    assert "fact one" in result
+    assert "loose fact" in result
+    assert "suggested fact" not in result
+    assert "suggested loose" not in result

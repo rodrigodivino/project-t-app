@@ -1,6 +1,8 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
+import { ShoeboxItemSummary } from './shoebox.service';
+import { EvidenceItemSummary } from './evidence.service';
 
 export type RelType = 'elaborate' | 'question' | 'cancel';
 
@@ -8,6 +10,7 @@ export interface SchemaEvidenceNode {
   type: 'evidence';
   id: string;
   rel?: RelType;
+  suggestion?: boolean;
   children?: SchemaNode[];
 }
 
@@ -32,7 +35,7 @@ export interface SchematizationResponse {
 export function allEvidenceIds(tree: SchemaNode[]): string[] {
   const ids: string[] = [];
   for (const node of tree) {
-    if (node.type === 'evidence') {
+    if (node.type === 'evidence' && !node.suggestion) {
       ids.push(node.id);
     }
     if (node.children) {
@@ -60,10 +63,12 @@ export class SchematizationService {
     parentId?: string,
     index?: number,
     rel: RelType = 'elaborate',
+    suggestion = false,
   ): Observable<SchematizationResponse> {
     const body: Record<string, unknown> = { evidence_id: evidenceId, rel };
     if (parentId !== undefined) body['parent_id'] = parentId;
     if (index !== undefined) body['index'] = index;
+    if (suggestion) body['suggestion'] = true;
     return this.http.post<SchematizationResponse>(
       `/api/workspaces/${workspaceId}/schematization/evidence`,
       body
@@ -130,6 +135,16 @@ export class SchematizationService {
     );
   }
 
+  approveSuggestion(
+    workspaceId: string,
+    nodeId: string,
+  ): Observable<SchematizationResponse> {
+    return this.http.patch<SchematizationResponse>(
+      `/api/workspaces/${workspaceId}/schematization/nodes/${nodeId}/approve-suggestion`,
+      {}
+    );
+  }
+
   triggerAiSearch(workspaceId: string): Observable<void> {
     return this.http.post<void>(
       `/api/workspaces/${workspaceId}/schematization/ai-search`,
@@ -143,4 +158,23 @@ export class SchematizationService {
       {}
     );
   }
+
+  triggerAiBuildCase(workspaceId: string): Observable<void> {
+    return this.http.post<void>(
+      `/api/workspaces/${workspaceId}/schematization/ai-build-case`,
+      {}
+    );
+  }
+
+  poll(workspaceId: string): Observable<WorkspacePollResponse> {
+    return this.http.get<WorkspacePollResponse>(
+      `/api/workspaces/${workspaceId}/poll`
+    );
+  }
+}
+
+export interface WorkspacePollResponse {
+  shoebox: ShoeboxItemSummary[];
+  evidence: EvidenceItemSummary[];
+  schematization: SchematizationResponse;
 }

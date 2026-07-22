@@ -12,29 +12,49 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.evidence import service as evidence_service
 from app.schematization import service as schematization_service
-from app.settings import AI_MODEL, ANTHROPIC_API_KEY
+from app.settings import AI_EFFORT, AI_MODEL, AI_THINKING, ANTHROPIC_API_KEY
 from app.shoebox import service as shoebox_service
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """\
-Você opera dentro de um framework de sensemaking, no passo \
-"Read and Extract". Os construtos do framework são: fonte de \
-dados externa, shoebox, snippets, arquivo de evidências, frames, \
-esquematização e história.
+GLOSSARY = """\
+Glossário do framework de sensemaking:
+- Fonte de dados externa: repositório de dados sob análise.
+- Shoebox: subconjunto da fonte relevante para a análise atual. \
+Cada item contém uma consulta SQL, uma explicação e uma tabela de \
+resultados.
+- Snippet: proposição factual curta extraída dos dados, sem \
+interpretação ou inferência. Snippets são os blocos de construção \
+das evidências.
+- Arquivo de evidências: conjunto de snippets extraídos do shoebox.
+- Frame: perspectiva, hipótese ou enquadramento criado pelo analista. \
+Frames são exclusivamente humanos.
+- Esquematização: representação externa do entendimento do analista, \
+organizada como árvore de frames e evidências com relações entre eles.
+- Relações entre evidência e nó pai:
+  - elaborate: a evidência apoia ou detalha o nó
+  - question: a evidência questiona ou desafia o nó
+  - cancel: a evidência invalida o nó
+- História: articulação textual da esquematização para comunicação."""
 
-Seu papel: ler um item do shoebox e extrair snippets factuais \
-para depositar nos arquivos de evidência. Snippets são \
-proposições concisas, bem formadas, significativas e precisas \
-extraídas dos dados subjacentes, sem interpretações, inferências, \
-deduções, julgamentos, vieses ou qualquer outra conclusão subjetiva.
+SYSTEM_PROMPT = f"""\
+{GLOSSARY}
+
+Você opera no passo "Read and Extract". Seu papel: ler um item do \
+shoebox e extrair snippets factuais que possam servir como evidências \
+para elaborar, questionar ou cancelar nós da esquematização atual.
+
+Ao extrair snippets, considere se os dados contêm fatos que poderiam \
+se relacionar com os nós da esquematização em qualquer uma dessas \
+três formas. Um fato que questiona ou invalida um frame é tão valioso \
+quanto um que o apoia. Os snippets são auto-contidos e não mencionam \
+a esquematização nem os frames em seu texto.
 
 Regras:
-- Produza ATÉ 2 snippets para o item do shoebox fornecido. \
-Na maioria dos casos, 0 ou 1 snippet é suficiente. Produza 2 somente \
-quando os dados são ricos e contêm observações claramente distintas. \
-Se os dados não contêm informação relevante para a esquematização, \
-produza nenhum snippet.
+- Produza de 0 a 5 snippets para o item do shoebox fornecido. \
+Na dúvida, produza 1. Produza 0 quando os dados já estiverem \
+cobertos pelas evidências existentes. Produza mais de 1 somente \
+quando múltiplas observações forem cruciais para a análise.
 - Cada snippet deve ser uma observação factual e objetiva dos dados, \
 não uma interpretação ou inferência.
 - Cada snippet deve referenciar as linhas específicas do resultado \
@@ -50,8 +70,19 @@ verificar a afirmação do snippet olhando somente as linhas indicadas.
 - Não produza snippets que dupliquem ou sobreponham substancialmente \
 as evidências já existentes nos arquivos de evidência.
 - O campo "content" DEVE ser escrito em português brasileiro (pt-BR) \
-com acentuação correta. Descreva o fato observado nos dados de forma \
-objetiva e concisa."""
+com acentuação correta. Cada snippet é UMA ÚNICA frase curta (máximo \
+20 palavras) que afirma um fato observável nos dados. Sem parênteses, \
+sem apostos explicativos, sem enumerações de valores. Se a frase \
+precisa de uma vírgula além de conectivos simples, ela é longa demais.
+
+Estratégia de equilíbrio:
+- Examine a linha "Cobertura" de cada frame. Quando um nó tem várias \
+elaborações e nenhum questionamento ou cancelamento, priorize a \
+extração de fatos que possam questionar ou cancelar esse nó.
+- Quando uma relação cancel já existe em um nó, procure fatos que \
+testem se essa invalidação se sustenta.
+- Priorize snippets relevantes para frames no topo da árvore com \
+menos filhos."""
 
 
 class Snippet(BaseModel):
@@ -75,8 +106,7 @@ def build_prompt(
     ]
     if evidence_titles:
         parts.append(
-            "Snippets já existentes nos arquivos de evidência "
-            "(evite duplicar):\n\n"
+            "Snippets já existentes nos arquivos de evidência (evite duplicar):\n\n"
         )
         for i, title in enumerate(evidence_titles, 1):
             parts.append(f"  {i}. {title}\n")
@@ -88,14 +118,16 @@ def build_prompt(
     parts.append(f"Consulta: {shoebox_item['query']}\n")
     parts.append(f"Explicação: {shoebox_item['explanation']}\n")
     result = shoebox_item["result"]
-    parts.append(f"Resultado ({len(result)} linhas):\n")
-    parts.append(json.dumps(result, indent=2, default=str))
+    parts.append(f"Resultado ({len(result)} linhas, índice base-0):\n")
+    indexed = [{"_index": i, **row} for i, row in enumerate(result)]
+    parts.append(json.dumps(indexed, indent=2, default=str))
     parts.append("\n\n")
     parts.append(
-        "Extraia até 2 snippets factuais relevantes para a esquematização "
-        "a partir dos dados deste item (tipicamente 0 ou 1). Para cada "
-        "snippet, indique quais linhas do resultado fundamentam a "
-        "observação (índices base-0)."
+        "Extraia de 0 a 5 snippets factuais que elaborem, questionem ou "
+        "cancelem nós da esquematização. Para cada snippet, indique quais "
+        "linhas do resultado fundamentam a observação (índices base-0). "
+        "Na dúvida, produza 1. Priorize equilíbrio entre relações e "
+        "cobertura dos nós no topo da árvore."
     )
     return "".join(parts)
 
@@ -109,7 +141,9 @@ def build_messages(
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(
             content=build_prompt(
-                schematization_context, evidence_titles, shoebox_item,
+                schematization_context,
+                evidence_titles,
+                shoebox_item,
             )
         ),
     ]
@@ -121,6 +155,8 @@ def call_llm_batch(inputs: list[list]) -> list[ExtractionResult]:
         api_key=SecretStr(ANTHROPIC_API_KEY),
         timeout=60,
         stop=None,
+        thinking=AI_THINKING,
+        effort=AI_EFFORT,
     )
     structured = llm.with_structured_output(ExtractionResult)
     return structured.batch(inputs)
@@ -165,11 +201,11 @@ def run(
     try:
         schema_data = schema_loader(db, workspace_id)
         from app.schematization.service import (
-            _all_evidence_ids, _normalize_data, serialize_for_llm,
+            _normalize_data,
+            serialize_for_llm,
         )
+
         tree = _normalize_data(schema_data)
-        if not _all_evidence_ids(tree):
-            return
 
         evidence_items = evidence_loader(db, workspace_id)
         evidence_map = {str(item.id): item.content for item in evidence_items}
@@ -183,6 +219,7 @@ def run(
             items = shoebox_loader(db, workspace_id)
 
         if not items:
+            logger.warning("read_and_extract EARLY EXIT: no shoebox items")
             return
 
         inputs = [
@@ -190,12 +227,15 @@ def run(
             for item in items
         ]
 
+        logger.warning("read_and_extract LLM input count=%d, first=%s", len(inputs), inputs[0] if inputs else "EMPTY")
         results = llm_caller(inputs)
+        logger.warning("read_and_extract LLM results count=%d, results=%s", len(results), results)
 
+        new_evidence_ids: list[uuid.UUID] = []
         for item, extraction in zip(items, results):
             for snippet in extraction.snippets:
                 try:
-                    evidence_service.add_item(
+                    ev = evidence_service.add_item(
                         db,
                         workspace_id,
                         item.id,
@@ -203,15 +243,16 @@ def run(
                         snippet.rows,
                         ai_authored=True,
                     )
+                    new_evidence_ids.append(ev.id)
                 except Exception:
-                    logger.exception(
-                        "failed to add snippet for shoebox %s", item.id
-                    )
+                    logger.exception("failed to add snippet for shoebox %s", item.id)
                     db.rollback()
+        if new_evidence_ids and ANTHROPIC_API_KEY:
+            from app.ai import build_case
+
+            build_case.fire(workspace_id, evidence_ids=new_evidence_ids)
     except Exception:
-        logger.exception(
-            "read_and_extract failed for workspace %s", workspace_id
-        )
+        logger.exception("read_and_extract failed for workspace %s", workspace_id)
     finally:
         db.close()
 

@@ -180,7 +180,7 @@ export class AccessGate {
       next: (valid) => {
         this.loading = false;
         if (valid) {
-          this.router.navigate(['/app']);
+          this.router.navigate(['/prototype']);
         } else {
           this.error = true;
         }

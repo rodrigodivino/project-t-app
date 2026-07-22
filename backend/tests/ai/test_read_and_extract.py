@@ -11,8 +11,18 @@ from app.ai.read_and_extract import (
 )
 
 
-SAMPLE_SCHEMA = {"frames": [], "evidence": ["ev-1"], "relationships": []}
-EMPTY_SCHEMA = {"frames": [], "evidence": [], "relationships": []}
+SAMPLE_SCHEMA_TEXT = "Frame: Hipótese\n  - [elabora] ev-1"
+SAMPLE_SCHEMA_TREE = [
+    {"type": "frame", "id": "f1", "title": "Hipótese", "description": "",
+     "children": [{"type": "evidence", "id": "ev-1", "rel": "elaborate"}]},
+]
+EMPTY_SCHEMA_TREE = []
+
+
+class FakeEvidenceItem:
+    def __init__(self, content="snippet text"):
+        self.id = uuid.uuid4()
+        self.content = content
 
 
 class FakeShoeboxItem:
@@ -45,19 +55,19 @@ class FakeSession:
 
 
 def test_build_prompt_contains_schematization():
-    prompt = build_prompt(SAMPLE_SCHEMA, [], {"query": "SELECT 1", "explanation": "x", "result": []})
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], {"query": "SELECT 1", "explanation": "x", "result": []})
     assert "ev-1" in prompt
 
 
 def test_build_prompt_empty_evidence_message():
-    prompt = build_prompt(SAMPLE_SCHEMA, [], {"query": "SELECT 1", "explanation": "x", "result": []})
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], {"query": "SELECT 1", "explanation": "x", "result": []})
     assert "vazios" in prompt.lower()
 
 
 def test_build_prompt_includes_existing_evidence():
     titles = ["Bairro X teve 100 postagens", "Conta Y postou 50 vezes"]
     prompt = build_prompt(
-        SAMPLE_SCHEMA, titles,
+        SAMPLE_SCHEMA_TEXT, titles,
         {"query": "SELECT 1", "explanation": "x", "result": []},
     )
     assert "Bairro X teve 100 postagens" in prompt
@@ -67,14 +77,14 @@ def test_build_prompt_includes_existing_evidence():
 
 def test_build_prompt_includes_shoebox_item():
     item = {"query": "SELECT COUNT(*) FROM t", "explanation": "Contagem total", "result": [{"count": 42}]}
-    prompt = build_prompt(SAMPLE_SCHEMA, [], item)
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], item)
     assert "SELECT COUNT(*)" in prompt
     assert "Contagem total" in prompt
     assert "42" in prompt
 
 
 def test_build_messages_returns_two_messages():
-    msgs = build_messages(SAMPLE_SCHEMA, [], {"query": "Q", "explanation": "E", "result": []})
+    msgs = build_messages(SAMPLE_SCHEMA_TEXT, [], {"query": "Q", "explanation": "E", "result": []})
     assert len(msgs) == 2
 
 
@@ -95,10 +105,10 @@ def test_run_creates_evidence_items():
         ws_id,
         llm_caller=fake_llm_batch,
         session_factory=lambda: session,
-        schema_loader=lambda db, ws: SAMPLE_SCHEMA,
+        schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: items,
         shoebox_getter=lambda db, sid: None,
-        evidence_titles_loader=lambda db, ws: [],
+        evidence_loader=lambda db, ws: [],
     )
     assert session.closed
     assert len(session.added) == 2
@@ -121,10 +131,10 @@ def test_run_skips_empty_schematization():
         uuid.uuid4(),
         llm_caller=tracking_llm,
         session_factory=lambda: session,
-        schema_loader=lambda db, ws: EMPTY_SCHEMA,
+        schema_loader=lambda db, ws: EMPTY_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: [],
         shoebox_getter=lambda db, sid: None,
-        evidence_titles_loader=lambda db, ws: [],
+        evidence_loader=lambda db, ws: [],
     )
     assert not called["llm"]
     assert session.closed
@@ -140,10 +150,10 @@ def test_run_handles_empty_extraction():
         uuid.uuid4(),
         llm_caller=empty_llm,
         session_factory=lambda: session,
-        schema_loader=lambda db, ws: SAMPLE_SCHEMA,
+        schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: [FakeShoeboxItem()],
         shoebox_getter=lambda db, sid: None,
-        evidence_titles_loader=lambda db, ws: [],
+        evidence_loader=lambda db, ws: [],
     )
     assert len(session.added) == 0
     assert session.closed
@@ -163,10 +173,10 @@ def test_run_processes_specific_ids():
         shoebox_ids=[item_a.id],
         llm_caller=fake_llm_batch,
         session_factory=lambda: session,
-        schema_loader=lambda db, ws: SAMPLE_SCHEMA,
+        schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: all_items,
         shoebox_getter=getter,
-        evidence_titles_loader=lambda db, ws: [],
+        evidence_loader=lambda db, ws: [],
     )
     assert len(session.added) == 1
     assert session.closed
@@ -184,10 +194,10 @@ def test_run_passes_evidence_titles_to_llm():
         uuid.uuid4(),
         llm_caller=capturing_llm,
         session_factory=lambda: session,
-        schema_loader=lambda db, ws: SAMPLE_SCHEMA,
+        schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: [FakeShoeboxItem()],
         shoebox_getter=lambda db, sid: None,
-        evidence_titles_loader=lambda db, ws: ["Existing snippet"],
+        evidence_loader=lambda db, ws: [FakeEvidenceItem("Existing snippet")],
     )
     prompt_text = received_inputs[0][1].content
     assert "Existing snippet" in prompt_text
@@ -220,13 +230,33 @@ def test_run_continues_on_snippet_failure():
         uuid.uuid4(),
         llm_caller=multi_snippet_llm,
         session_factory=lambda: session,
-        schema_loader=lambda db, ws: SAMPLE_SCHEMA,
+        schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: [FakeShoeboxItem(result=[{"a": 1}, {"a": 2}])],
         shoebox_getter=lambda db, sid: None,
-        evidence_titles_loader=lambda db, ws: [],
+        evidence_loader=lambda db, ws: [],
     )
     assert len(session.added) == 1
     assert session.closed
+
+
+def test_prompt_includes_balance_annotation():
+    schema_tree = [
+        {"type": "frame", "id": "f1", "title": "Hipótese", "description": "",
+         "children": [
+             {"type": "evidence", "id": "ev-1", "rel": "elaborate"},
+         ]},
+    ]
+    from app.schematization.service import _normalize_data, serialize_for_llm
+    tree = _normalize_data(schema_tree)
+    evidence_map = {"ev-1": "fact one"}
+    schema_context = serialize_for_llm(tree, evidence_map)
+    prompt = build_prompt(
+        schema_context, [],
+        {"query": "SELECT 1", "explanation": "x", "result": []},
+    )
+    assert "Cobertura:" in prompt
+    assert "1× elabora" in prompt
+    assert "0× questiona" in prompt
 
 
 def test_fire_returns_immediately():

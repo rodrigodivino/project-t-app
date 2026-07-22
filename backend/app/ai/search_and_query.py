@@ -3,6 +3,7 @@ import logging
 import threading
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Callable
 
 from langchain_anthropic import ChatAnthropic
@@ -11,25 +12,27 @@ from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.settings import AI_MODEL, ANTHROPIC_API_KEY
+from app.settings import AI_EFFORT, AI_MODEL, AI_THINKING, ANTHROPIC_API_KEY
 from app.evidence import service as evidence_service
 from app.shoebox import service as shoebox_service
 from app.sources import service as sources_service
 from app.ai import read_and_extract
+from app.ai.read_and_extract import GLOSSARY
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """\
-Você opera dentro de um framework de sensemaking, no passo \
-"Search and Filter". Os construtos do framework são: fonte de \
-dados externa, shoebox, snippets, arquivo de evidências, frames, \
-esquematização e história.
+SYSTEM_PROMPT = f"""\
+{GLOSSARY}
 
-Seu papel: consultar a fonte de dados externa (uma tabela PostgreSQL) \
-e produzir resultados para depositar no shoebox. Suas consultas devem \
-buscar relevância para a esquematização atual, que contém frames \
-(perspectivas interpretativas), referências de evidência e relações \
-entre eles.
+Você opera no passo "Search and Filter". Seu papel: gerar consultas \
+SQL contra a fonte de dados externa para encontrar dados que possam \
+se tornar evidências para elaborar, questionar ou cancelar nós da \
+esquematização atual. Os resultados são depositados no shoebox.
+
+Ao escolher consultas, considere lacunas em qualquer uma das três \
+relações. Um frame pode precisar de dados que o apoiem (elaborate), \
+que o desafiem (question) ou que o invalidem (cancel). Priorize \
+consultas que preencham lacunas na cobertura atual da esquematização.
 
 A fonte de dados externa é a tabela post_rede_social_himark, contendo \
 postagens de redes sociais do dataset VAST 2019 MC3, representando a \
@@ -53,10 +56,10 @@ Características importantes dos dados:
 gerado por bots.
 
 Regras:
-- Produza ATÉ 3 consultas SQL SELECT (tipicamente 1 ou 2). Produza 3 \
-somente quando há lacunas claras na cobertura. Se a esquematização já \
-estiver bem coberta pelos itens existentes no shoebox, produza menos \
-ou nenhuma.
+- Produza de 0 a 5 consultas SQL SELECT. Na dúvida, produza 1. \
+Produza 0 quando o shoebox já cobrir bem a esquematização. Produza \
+mais de 1 somente quando múltiplas consultas forem cruciais para \
+preencher lacunas distintas na cobertura.
 - Prefira consultas que agregam, agrupam, fatiam e cruzam os dados de \
 formas úteis: COUNT, GROUP BY, date_trunc, filtros por palavras-chave, \
 combinações de colunas. Consultas que revelam padrões são mais valiosas \
@@ -81,22 +84,38 @@ extract(hour FROM time)::int || 'h' AS hora com \
 ORDER BY extract(hour FROM time). \
 A coluna alias deve ser TEXT, nunca timestamp. O ORDER BY garante \
 que as linhas chegam ordenadas no tempo. Nunca use o resultado bruto \
-de date_trunc como coluna final.
+de date_trunc como coluna final. Sempre use HH24 (formato 24 horas) \
+em to_char, nunca HH ou HH12.
 - Nunca aplique LIMIT a consultas com GROUP BY. O número de linhas \
 é determinado pelo número de grupos, não por um teto arbitrário. \
 Use LIMIT somente em consultas que listam linhas individuais \
 (sem GROUP BY).
 - Não gere consultas que dupliquem ou sobreponham substancialmente os \
 itens já existentes no shoebox.
+- Ao usar ROUND com precisão, converta para numeric antes: \
+ROUND((expr)::numeric, 2). PostgreSQL não aceita ROUND(float, int).
 - Mantenha as consultas simples e rápidas. Use sempre o nome da tabela \
 post_rede_social_himark. Não use CTEs ou subconsultas a menos que \
 necessário.
 - O campo "explanation" DEVE ser escrito em português brasileiro (pt-BR) \
-com acentuação correta. Use o formato "X, para Y", onde X descreve o \
-que os resultados contêm e Y é a razão pela qual isso é relevante \
-para a esquematização. Exemplo: "Contagem de postagens por bairro \
-por hora, para identificar onde a atividade concentrou durante a crise". \
-O SQL permanece em inglês."""
+com acentuação correta. Use o formato "X, para Y" em no máximo 25 \
+palavras. X descreve o que os resultados contêm e Y é a razão pela \
+qual isso é relevante. Exemplo: "Postagens por bairro por hora, para \
+localizar picos de atividade na crise". Sem parênteses, sem apostos. \
+O SQL permanece em inglês.
+
+Estratégia de equilíbrio:
+- Examine a linha "Cobertura" de cada frame. Priorize consultas que \
+preencham lacunas na cobertura de relações. Um frame com 2 \
+elaborações e 0 questionamentos precisa de dados que o desafiem, \
+não de mais apoio.
+- Se uma relação cancel já existe em um nó, busque dados que testem \
+se essa invalidação se sustenta ou se ela própria pode ser \
+questionada.
+- Priorize frames no topo da árvore com menos filhos em vez de nós \
+profundos que já possuem cobertura.
+- O objetivo é amplitude pela árvore e equilíbrio entre relações, \
+não profundidade em um único nó."""
 
 
 class SearchQuery(BaseModel):
@@ -133,10 +152,12 @@ def build_prompt(schematization_context: str, existing_items: list[dict]) -> str
         parts.append("O shoebox está vazio.\n\n")
 
     parts.append(
-        "Produza até 3 consultas SQL SELECT contra post_rede_social_himark "
-        "que ajudem o analista a explorar dados relevantes para esta "
-        "esquematização (tipicamente 1 ou 2). Se os itens existentes já "
-        "cobrem bem a esquematização, produza menos ou nenhuma consulta."
+        "Produza até 3 consultas SQL SELECT (tipicamente 1 ou 2) contra "
+        "post_rede_social_himark que busquem dados capazes de elaborar, "
+        "questionar ou cancelar nós da esquematização. Se os itens "
+        "existentes já cobrem bem a esquematização, produza menos ou "
+        "nenhuma consulta. Priorize equilíbrio entre relações e "
+        "cobertura dos nós no topo da árvore."
     )
     return "".join(parts)
 
@@ -149,6 +170,8 @@ def call_llm(
         api_key=SecretStr(ANTHROPIC_API_KEY),
         timeout=30,
         stop=None,
+        thinking=AI_THINKING,
+        effort=AI_EFFORT,
     )
     structured = llm.with_structured_output(SearchQueries)
     result = structured.invoke([
@@ -238,6 +261,8 @@ def _chart_llm() -> Any:
         api_key=SecretStr(ANTHROPIC_API_KEY),
         timeout=30,
         stop=None,
+        thinking=AI_THINKING,
+        effort=AI_EFFORT,
     ).with_structured_output(ChartSpec)
 
 
@@ -271,6 +296,8 @@ def generate_charts_batch(
 
 
 def _make_serializable(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
     if isinstance(obj, datetime):
         return obj.isoformat()
     if isinstance(obj, date):
