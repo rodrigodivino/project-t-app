@@ -195,7 +195,7 @@ def test_different_pipelines_independent():
 def test_running_pipelines_reports_per_pipeline():
     ws = uuid.uuid4()
     status = running_pipelines(ws)
-    assert status == {"search": False, "extract": False, "build_case": False}
+    assert status == {"search": False, "extract": False, "build_case": False, "story": False}
 
     hold = threading.Event()
     started = threading.Event()
@@ -216,7 +216,7 @@ def test_running_pipelines_reports_per_pipeline():
     time.sleep(0.1)
 
     status = running_pipelines(ws)
-    assert status == {"search": False, "extract": False, "build_case": False}
+    assert status == {"search": False, "extract": False, "build_case": False, "story": False}
 
 
 def test_different_workspaces_independent():
@@ -239,3 +239,68 @@ def test_different_workspaces_independent():
     other_ran.wait(timeout=2)
 
     hold.set()
+
+
+BASE_TREE = [
+    {"type": "frame", "id": "f1", "title": "H", "description": "D",
+     "children": [{"type": "evidence", "id": "e1", "rel": "elaborate"}]},
+]
+TREE_WITH_SUGGESTION = [
+    {"type": "frame", "id": "f1", "title": "H", "description": "D",
+     "children": [
+         {"type": "evidence", "id": "e1", "rel": "elaborate"},
+         {"type": "evidence", "id": "e2", "rel": "question", "suggestion": True},
+     ]},
+]
+
+
+def test_pipeline_hash_ignores_suggestions_search():
+    h1 = _pipeline_hash(Pipeline.SEARCH, BASE_TREE, ["s1"], [])
+    h2 = _pipeline_hash(Pipeline.SEARCH, TREE_WITH_SUGGESTION, ["s1"], [])
+    assert h1 == h2
+
+
+def test_pipeline_hash_ignores_suggestions_extract():
+    h1 = _pipeline_hash(Pipeline.EXTRACT, BASE_TREE, ["s1"], ["e1"])
+    h2 = _pipeline_hash(Pipeline.EXTRACT, TREE_WITH_SUGGESTION, ["s1"], ["e1"])
+    assert h1 == h2
+
+
+def test_pipeline_hash_ignores_suggestions_build_case():
+    h1 = _pipeline_hash(Pipeline.BUILD_CASE, BASE_TREE, [], ["e1"])
+    h2 = _pipeline_hash(Pipeline.BUILD_CASE, TREE_WITH_SUGGESTION, [], ["e1"])
+    assert h1 == h2
+
+
+def test_pipeline_hash_changes_on_approved_suggestion():
+    tree_approved = [
+        {"type": "frame", "id": "f1", "title": "H", "description": "D",
+         "children": [
+             {"type": "evidence", "id": "e2", "rel": "question"},
+         ]},
+    ]
+    h1 = _pipeline_hash(Pipeline.BUILD_CASE, TREE_WITH_SUGGESTION, [], ["e2"])
+    h2 = _pipeline_hash(Pipeline.BUILD_CASE, tree_approved, [], ["e2"])
+    assert h1 != h2
+
+
+def test_pipeline_hash_story_depends_only_on_schema():
+    h1 = _pipeline_hash(Pipeline.STORY, BASE_TREE, ["s1"], ["e1"])
+    h2 = _pipeline_hash(Pipeline.STORY, BASE_TREE, ["s2"], ["e99"])
+    assert h1 == h2
+
+
+def test_pipeline_hash_story_changes_on_schema_change():
+    tree2 = [
+        {"type": "frame", "id": "f1", "title": "Changed", "description": "D",
+         "children": [{"type": "evidence", "id": "e1", "rel": "elaborate"}]},
+    ]
+    h1 = _pipeline_hash(Pipeline.STORY, BASE_TREE, [], [])
+    h2 = _pipeline_hash(Pipeline.STORY, tree2, [], [])
+    assert h1 != h2
+
+
+def test_pipeline_hash_story_ignores_suggestions():
+    h1 = _pipeline_hash(Pipeline.STORY, BASE_TREE, [], [])
+    h2 = _pipeline_hash(Pipeline.STORY, TREE_WITH_SUGGESTION, [], [])
+    assert h1 == h2

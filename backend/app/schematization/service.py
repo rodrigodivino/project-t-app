@@ -100,6 +100,7 @@ def add_evidence(
     index: int | None = None,
     rel: str = "elaborate",
     suggestion: bool = False,
+    description: str = "",
 ) -> Schematization:
     row = get_or_create(db, workspace_id)
     eid = str(evidence_id)
@@ -110,6 +111,8 @@ def add_evidence(
     node: dict = {"type": "evidence", "id": eid}
     if suggestion:
         node["suggestion"] = True
+    if description:
+        node["description"] = description
     if parent_id is not None:
         node["rel"] = rel
 
@@ -209,6 +212,26 @@ def approve_suggestion(
     return row
 
 
+def update_node(
+    db: Session,
+    workspace_id: uuid.UUID,
+    node_id: uuid.UUID,
+    description: str | None = None,
+) -> Schematization:
+    row = get_or_create(db, workspace_id)
+    nid = str(node_id)
+    tree = _deep_copy_tree(row.data)
+    node = _find_node(tree, nid)
+    if node is None:
+        raise ValueError(f"Node {nid} not found")
+    if description is not None:
+        node["description"] = description
+    row.data = tree
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def move_node(
     db: Session,
     workspace_id: uuid.UUID,
@@ -268,12 +291,7 @@ def remove_node(
     if location is None:
         raise ValueError(f"Node {nid} not found")
     parent_list, idx = location
-    removed = parent_list.pop(idx)
-    orphans = removed.get("children", [])
-    for orphan in orphans:
-        orphan.pop("rel", None)
-    for i, orphan in enumerate(orphans):
-        parent_list.insert(idx + i, orphan)
+    parent_list.pop(idx)
 
     row.data = tree
     db.commit()
@@ -296,37 +314,16 @@ def strip_empty_frames(tree: list) -> list:
     return [n for n in tree if not _is_empty_frame(n)]
 
 
-REL_LABELS = {
-    "elaborate": "elabora",
-    "question": "questiona",
-    "cancel": "cancela",
-}
-
-
-def serialize_for_llm(tree: list, evidence_map: dict[str, str]) -> str:
-    lines: list[str] = [
-        "Tipos de relação entre nós:",
-        "- elaborate: a evidência apoia ou detalha o nó pai",
-        "- question: a evidência questiona ou desafia o nó pai",
-        "- cancel: a evidência invalida o nó pai",
-        "",
-    ]
-    loose: list[str] = []
+def strip_suggestions(tree: list) -> list:
+    result = []
     for node in tree:
         if node.get("suggestion"):
             continue
-        if _is_empty_frame(node):
-            continue
-        if node.get("type") == "frame":
-            _serialize_frame(node, lines, evidence_map, indent=0)
-        elif node.get("type") == "evidence":
-            content = evidence_map.get(node["id"], "?")
-            loose.append(content)
-    if loose:
-        lines.append("Evidências sem frame:")
-        for content in loose:
-            lines.append(f"- {content}")
-    return "\n".join(lines)
+        cleaned = dict(node)
+        if "children" in cleaned:
+            cleaned["children"] = strip_suggestions(cleaned["children"])
+        result.append(cleaned)
+    return result
 
 
 def _count_children_by_rel(node: dict) -> dict[str, int]:
@@ -341,33 +338,210 @@ def _count_children_by_rel(node: dict) -> dict[str, int]:
     return counts
 
 
-def _format_balance(counts: dict[str, int]) -> str:
-    total = sum(counts.values())
-    if total == 0:
-        return "Cobertura: nenhuma evidência"
-    parts = []
-    for rel, label in REL_LABELS.items():
-        parts.append(f"{counts.get(rel, 0)}× {label}")
-    return f"Cobertura: {', '.join(parts)}"
+def _xml_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-def _serialize_frame(
+def _count_attrs(node: dict) -> str:
+    counts = _count_children_by_rel(node)
+    return (
+        f'elaborations="{counts["elaborate"]}" '
+        f'questions="{counts["question"]}" '
+        f'cancellations="{counts["cancel"]}"'
+    )
+
+
+def serialize_xml(tree: list, evidence_map: dict[str, str]) -> str:
+    lines: list[str] = ["<schematization>"]
+    for node in tree:
+        if node.get("suggestion"):
+            continue
+        if _is_empty_frame(node):
+            continue
+        if node.get("type") == "frame":
+            _xml_frame(node, lines, evidence_map, indent=0)
+        elif node.get("type") == "evidence":
+            _xml_evidence_root(node, lines, evidence_map, indent=0)
+    lines.append("</schematization>")
+    return "\n".join(lines)
+
+
+def _xml_frame(
     node: dict, lines: list[str], evidence_map: dict[str, str], indent: int,
 ) -> None:
     prefix = "  " * indent
-    lines.append(f"{prefix}Frame: {node.get('title', '')}")
+    title = _xml_escape(node.get("title", ""))
+    lines.append(f'{prefix}<frame title="{title}" {_count_attrs(node)}>')
     desc = node.get("description", "")
     if desc:
-        lines.append(f"{prefix}  Descrição: {desc}")
-    counts = _count_children_by_rel(node)
-    lines.append(f"{prefix}  {_format_balance(counts)}")
+        lines.append(f"{prefix}  <description>{_xml_escape(desc)}</description>")
     for child in node.get("children", []):
         if child.get("suggestion"):
             continue
         if child.get("type") == "evidence":
-            content = evidence_map.get(child["id"], "?")
-            rel = child.get("rel", "elaborate")
-            label = REL_LABELS.get(rel, rel)
-            lines.append(f"{prefix}  - [{label}] {content}")
+            _xml_evidence(child, lines, evidence_map, indent + 1)
         elif child.get("type") == "frame":
-            _serialize_frame(child, lines, evidence_map, indent + 1)
+            _xml_frame(child, lines, evidence_map, indent + 1)
+    lines.append(f"{prefix}</frame>")
+
+
+def _xml_evidence(
+    node: dict, lines: list[str], evidence_map: dict[str, str], indent: int,
+) -> None:
+    prefix = "  " * indent
+    rel = node.get("rel", "elaborate")
+    content = evidence_map.get(node["id"], "?")
+    lines.append(f'{prefix}<evidence rel="{rel}" {_count_attrs(node)}>')
+    lines.append(f"{prefix}  <text>{_xml_escape(content)}</text>")
+    desc = node.get("description", "")
+    if desc:
+        lines.append(f"{prefix}  <description>{_xml_escape(desc)}</description>")
+    for child in node.get("children", []):
+        if child.get("suggestion"):
+            continue
+        if child.get("type") == "evidence":
+            _xml_evidence(child, lines, evidence_map, indent + 1)
+        elif child.get("type") == "frame":
+            _xml_frame(child, lines, evidence_map, indent + 1)
+    lines.append(f"{prefix}</evidence>")
+
+
+def _xml_evidence_root(
+    node: dict, lines: list[str], evidence_map: dict[str, str], indent: int,
+) -> None:
+    prefix = "  " * indent
+    content = evidence_map.get(node["id"], "?")
+    lines.append(f"{prefix}<evidence>")
+    lines.append(f"{prefix}  <text>{_xml_escape(content)}</text>")
+    lines.append(f"{prefix}</evidence>")
+
+
+ALL_RELS = {"elaborate", "question", "cancel"}
+
+
+def _open_suggestion_slots(tree: list) -> dict[str, set[str]]:
+    slots: dict[str, set[str]] = {}
+    for node in tree:
+        _collect_slots(node, slots)
+    return slots
+
+
+def _collect_slots(node: dict, slots: dict[str, set[str]]) -> None:
+    if node.get("type") == "evidence" and node.get("suggestion"):
+        return
+    taken: set[str] = set()
+    for child in node.get("children", []):
+        if (
+            child.get("type") == "evidence"
+            and child.get("suggestion")
+            and child.get("rel") in ALL_RELS
+        ):
+            taken.add(child["rel"])
+        _collect_slots(child, slots)
+    if node.get("type") in ("frame", "evidence"):
+        open_rels = ALL_RELS - taken
+        if open_rels:
+            slots[node["id"]] = open_rels
+
+
+def serialize_xml_suggestions(
+    tree: list, evidence_map: dict[str, str],
+    slots: dict[str, set[str]] | None = None,
+) -> str:
+    if slots is None:
+        slots = {}
+    lines: list[str] = ["<schematization>"]
+    for node in tree:
+        if _is_empty_frame(node):
+            continue
+        if node.get("type") == "frame":
+            _xml_frame_sug(node, lines, evidence_map, slots, indent=0)
+        elif node.get("type") == "evidence":
+            if node.get("suggestion"):
+                continue
+            _xml_evidence_root_sug(node, lines, evidence_map, slots, indent=0)
+    lines.append("</schematization>")
+    return "\n".join(lines)
+
+
+def _xml_slots(node_id: str, slots: dict[str, set[str]], lines: list[str], prefix: str) -> None:
+    open_rels = slots.get(node_id)
+    if not open_rels:
+        return
+    for rel in sorted(open_rels):
+        lines.append(f'{prefix}<slot rel="{rel}"/>')
+
+
+def _xml_frame_sug(
+    node: dict, lines: list[str], evidence_map: dict[str, str],
+    slots: dict[str, set[str]], indent: int,
+) -> None:
+    prefix = "  " * indent
+    title = _xml_escape(node.get("title", ""))
+    nid = node["id"]
+    lines.append(f'{prefix}<frame id="{nid}" title="{title}" {_count_attrs(node)}>')
+    desc = node.get("description", "")
+    if desc:
+        lines.append(f"{prefix}  <description>{_xml_escape(desc)}</description>")
+    for child in node.get("children", []):
+        if child.get("type") == "evidence":
+            if child.get("suggestion"):
+                _xml_evidence_suggestion(child, lines, evidence_map, indent + 1)
+            else:
+                _xml_evidence_sug(child, lines, evidence_map, slots, indent + 1)
+        elif child.get("type") == "frame":
+            _xml_frame_sug(child, lines, evidence_map, slots, indent + 1)
+    _xml_slots(nid, slots, lines, prefix + "  ")
+    lines.append(f"{prefix}</frame>")
+
+
+def _xml_evidence_sug(
+    node: dict, lines: list[str], evidence_map: dict[str, str],
+    slots: dict[str, set[str]], indent: int,
+) -> None:
+    prefix = "  " * indent
+    rel = node.get("rel", "elaborate")
+    nid = node["id"]
+    content = evidence_map.get(nid, "?")
+    lines.append(f'{prefix}<evidence id="{nid}" rel="{rel}" {_count_attrs(node)}>')
+    lines.append(f"{prefix}  <text>{_xml_escape(content)}</text>")
+    desc = node.get("description", "")
+    if desc:
+        lines.append(f"{prefix}  <description>{_xml_escape(desc)}</description>")
+    for child in node.get("children", []):
+        if child.get("type") == "evidence":
+            if child.get("suggestion"):
+                _xml_evidence_suggestion(child, lines, evidence_map, indent + 1)
+            else:
+                _xml_evidence_sug(child, lines, evidence_map, slots, indent + 1)
+        elif child.get("type") == "frame":
+            _xml_frame_sug(child, lines, evidence_map, slots, indent + 1)
+    _xml_slots(nid, slots, lines, prefix + "  ")
+    lines.append(f"{prefix}</evidence>")
+
+
+def _xml_evidence_root_sug(
+    node: dict, lines: list[str], evidence_map: dict[str, str],
+    slots: dict[str, set[str]], indent: int,
+) -> None:
+    prefix = "  " * indent
+    nid = node["id"]
+    content = evidence_map.get(nid, "?")
+    lines.append(f'{prefix}<evidence id="{nid}" {_count_attrs(node)}>')
+    lines.append(f"{prefix}  <text>{_xml_escape(content)}</text>")
+    _xml_slots(nid, slots, lines, prefix + "  ")
+    lines.append(f"{prefix}</evidence>")
+
+
+def _xml_evidence_suggestion(
+    node: dict, lines: list[str], evidence_map: dict[str, str], indent: int,
+) -> None:
+    prefix = "  " * indent
+    rel = node.get("rel", "elaborate")
+    content = evidence_map.get(node["id"], "?")
+    lines.append(f'{prefix}<evidence suggestion="true" rel="{rel}">')
+    lines.append(f"{prefix}  <text>{_xml_escape(content)}</text>")
+    desc = node.get("description", "")
+    if desc:
+        lines.append(f"{prefix}  <description>{_xml_escape(desc)}</description>")
+    lines.append(f"{prefix}</evidence>")

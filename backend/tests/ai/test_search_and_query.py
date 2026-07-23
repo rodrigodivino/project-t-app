@@ -19,30 +19,29 @@ SAMPLE_SCHEMA_TREE = [
 
 
 def test_build_prompt_contains_schematization():
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [])
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, "<shoebox/>")
     assert "ev-1" in prompt
     assert "post_rede_social_himark" in prompt
 
 
 def test_build_prompt_is_nonempty():
-    prompt = build_prompt("", [])
+    prompt = build_prompt("", "<shoebox/>")
     assert len(prompt) > 0
 
 
-def test_build_prompt_empty_shoebox_message():
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [])
-    assert "vazio" in prompt.lower()
+def test_build_prompt_empty_shoebox():
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, "<shoebox/>")
+    assert "<shoebox/>" in prompt
 
 
 def test_build_prompt_includes_existing_items():
-    existing = [
-        {
-            "query": "SELECT COUNT(*) FROM post_rede_social_himark",
-            "explanation": "Contagem total",
-            "sample_rows": [{"count": 42}],
-        },
-    ]
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, existing)
+    shoebox_xml = (
+        '<shoebox>\n<item id="abc">\n  <query>SELECT COUNT(*) FROM '
+        'post_rede_social_himark</query>\n  <explanation>Contagem total'
+        '</explanation>\n  <row>\n    <count>42</count>\n  </row>\n'
+        '</item>\n</shoebox>'
+    )
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, shoebox_xml)
     assert "SELECT COUNT(*)" in prompt
     assert "Contagem total" in prompt
     assert "42" in prompt
@@ -93,7 +92,15 @@ class FakeSession:
         self.closed = True
 
 
-def fake_llm(data: str, existing: list[dict]) -> SearchQueries:
+class FakeShoeboxItem:
+    def __init__(self, sid=None, query="SELECT 1", explanation="test", result=None):
+        self.id = sid or uuid.uuid4()
+        self.query = query
+        self.explanation = explanation
+        self.result = result or [{"id": 1, "message": "hello"}]
+
+
+def fake_llm(data: str, shoebox_xml: str) -> SearchQueries:
     return SearchQueries(queries=[
         SearchQuery(
             sql="SELECT id, message FROM post_rede_social_himark LIMIT 5",
@@ -114,7 +121,7 @@ def test_run_creates_shoebox_items():
         SAMPLE_SCHEMA_TREE,
         llm_caller=fake_llm,
         session_factory=lambda: session,
-        items_loader=lambda db, ws: [],
+        shoebox_loader=lambda db, ws: [],
     )
     assert session.closed
     assert len(session.added) == 2
@@ -145,14 +152,14 @@ def test_run_continues_on_query_failure():
         SAMPLE_SCHEMA_TREE,
         llm_caller=fake_llm,
         session_factory=lambda: session,
-        items_loader=lambda db, ws: [],
+        shoebox_loader=lambda db, ws: [],
     )
     assert len(session.added) == 1
     assert session.closed
 
 
 def test_run_handles_empty_queries():
-    def empty_llm(data: str, existing: list[dict]) -> SearchQueries:
+    def empty_llm(data: str, shoebox_xml: str) -> SearchQueries:
         return SearchQueries(queries=[])
 
     session = FakeSession()
@@ -162,23 +169,21 @@ def test_run_handles_empty_queries():
         SAMPLE_SCHEMA_TREE,
         llm_caller=empty_llm,
         session_factory=lambda: session,
-        items_loader=lambda db, ws: [],
+        shoebox_loader=lambda db, ws: [],
     )
     assert len(session.added) == 0
     assert session.closed
 
 
-def test_run_passes_existing_items_to_llm():
+def test_run_passes_shoebox_xml_to_llm():
     received = {}
 
-    def capturing_llm(data: str, existing: list[dict]) -> SearchQueries:
+    def capturing_llm(data: str, shoebox_xml: str) -> SearchQueries:
         received["data"] = data
-        received["existing"] = existing
+        received["shoebox_xml"] = shoebox_xml
         return SearchQueries(queries=[])
 
-    existing_items = [
-        {"query": "SELECT 1", "explanation": "test", "sample_rows": []},
-    ]
+    item = FakeShoeboxItem(query="SELECT 1", explanation="test", result=[])
     session = FakeSession()
     ws_id = uuid.uuid4()
     run(
@@ -186,11 +191,12 @@ def test_run_passes_existing_items_to_llm():
         SAMPLE_SCHEMA_TREE,
         llm_caller=capturing_llm,
         session_factory=lambda: session,
-        items_loader=lambda db, ws: existing_items,
+        shoebox_loader=lambda db, ws: [item],
     )
     assert isinstance(received["data"], str)
     assert "Hipótese" in received["data"]
-    assert received["existing"] == existing_items
+    assert isinstance(received["shoebox_xml"], str)
+    assert str(item.id) in received["shoebox_xml"]
 
 
 def test_clean_rows_serializes_datetime():
@@ -216,12 +222,11 @@ def test_prompt_includes_balance_annotation():
              {"type": "evidence", "id": "ev-2", "rel": "elaborate"},
          ]},
     ]
-    from app.schematization.service import _normalize_data, serialize_for_llm
+    from app.schematization.service import _normalize_data, serialize_xml
     from app.evidence import service as evidence_service
     tree = _normalize_data(schema_tree)
     evidence_map = {"ev-1": "fact one", "ev-2": "fact two"}
-    schema_context = serialize_for_llm(tree, evidence_map)
-    prompt = build_prompt(schema_context, [])
-    assert "Cobertura:" in prompt
-    assert "2× elabora" in prompt
-    assert "0× questiona" in prompt
+    schema_context = serialize_xml(tree, evidence_map)
+    prompt = build_prompt(schema_context, "<shoebox/>")
+    assert 'elaborations="2"' in prompt
+    assert 'questions="0"' in prompt

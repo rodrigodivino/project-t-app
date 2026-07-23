@@ -72,6 +72,20 @@ def reject_item(db: Session, item_id: uuid.UUID) -> EvidenceItem | None:
     return item
 
 
+def _xml_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def serialize_xml(items: list[EvidenceItem]) -> str:
+    if not items:
+        return "<evidence-file/>"
+    lines = ["<evidence-file>"]
+    for item in items:
+        lines.append(f'<evidence id="{item.id}">{_xml_escape(item.content)}</evidence>')
+    lines.append("</evidence-file>")
+    return "\n".join(lines)
+
+
 def remove_item(db: Session, item_id: uuid.UUID) -> bool:
     item = db.get(EvidenceItem, item_id)
     if item is None:

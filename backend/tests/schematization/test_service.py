@@ -15,8 +15,9 @@ from app.schematization.service import (
     move_node,
     remove_evidence,
     remove_node,
-    serialize_for_llm,
+    serialize_xml,
     strip_empty_frames,
+    strip_suggestions,
     update_frame,
 )
 
@@ -278,7 +279,7 @@ def test_move_node_prevents_cycle():
         pass
 
 
-def test_remove_node_splices_children():
+def test_remove_node_removes_subtree():
     db = MagicMock()
     ws_id = uuid.uuid4()
     fid = str(uuid.uuid4())
@@ -296,9 +297,7 @@ def test_remove_node_splices_children():
     db.get.return_value = existing
     result = remove_node(db, ws_id, uuid.UUID(fid))
     ids = [n["id"] for n in result.data]
-    assert ids == ["before", eid1, eid2, "after"]
-    assert "rel" not in result.data[1]
-    assert "rel" not in result.data[2]
+    assert ids == ["before", "after"]
 
 
 def test_all_evidence_ids_skips_suggestions():
@@ -414,7 +413,7 @@ def test_count_children_by_rel_empty():
     assert counts == {"elaborate": 0, "question": 0, "cancel": 0}
 
 
-def test_serialize_for_llm_includes_balance():
+def test_serialize_xml_includes_counts():
     tree = [
         {"type": "frame", "id": "f1", "title": "H1", "description": "", "children": [
             {"type": "evidence", "id": "e1", "rel": "elaborate"},
@@ -422,22 +421,23 @@ def test_serialize_for_llm_includes_balance():
         ]},
     ]
     evidence_map = {"e1": "fact one", "e2": "fact two"}
-    result = serialize_for_llm(tree, evidence_map)
-    assert "Cobertura:" in result
-    assert "1× elabora" in result
-    assert "1× questiona" in result
-    assert "0× cancela" in result
+    result = serialize_xml(tree, evidence_map)
+    assert 'elaborations="1"' in result
+    assert 'questions="1"' in result
+    assert 'cancellations="0"' in result
 
 
-def test_serialize_for_llm_empty_frame_balance():
+def test_serialize_xml_empty_frame_counts():
     tree = [
         {"type": "frame", "id": "f1", "title": "H1", "description": "", "children": []},
     ]
-    result = serialize_for_llm(tree, {})
-    assert "nenhuma evidência" in result
+    result = serialize_xml(tree, {})
+    assert 'elaborations="0"' in result
+    assert 'questions="0"' in result
+    assert 'cancellations="0"' in result
 
 
-def test_serialize_for_llm_excludes_suggestions():
+def test_serialize_xml_excludes_suggestions():
     tree = [
         {"type": "frame", "id": "f1", "title": "H1", "description": "", "children": [
             {"type": "evidence", "id": "e1", "rel": "elaborate"},
@@ -452,11 +452,29 @@ def test_serialize_for_llm_excludes_suggestions():
         "e3": "loose fact",
         "e4": "suggested loose",
     }
-    result = serialize_for_llm(tree, evidence_map)
+    result = serialize_xml(tree, evidence_map)
     assert "fact one" in result
     assert "loose fact" in result
     assert "suggested fact" not in result
     assert "suggested loose" not in result
+
+
+def test_serialize_xml_recurses_evidence_children():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "H1", "description": "", "children": [
+            {"type": "evidence", "id": "e1", "rel": "elaborate", "children": [
+                {"type": "evidence", "id": "e2", "rel": "cancel",
+                 "description": "contradicts parent"},
+            ]},
+        ]},
+    ]
+    evidence_map = {"e1": "parent fact", "e2": "child fact"}
+    result = serialize_xml(tree, evidence_map)
+    assert "parent fact" in result
+    assert "child fact" in result
+    assert 'rel="cancel"' in result
+    assert "contradicts parent" in result
+    assert 'cancellations="1"' in result
 
 
 def test_add_evidence_rejects_suggestion_parent():
@@ -538,7 +556,7 @@ def test_strip_empty_frames():
     assert result[1]["id"] == "e1"
 
 
-def test_serialize_for_llm_skips_empty_frames():
+def test_serialize_xml_skips_empty_frames():
     tree = [
         {"type": "frame", "id": "f1", "title": "", "description": "", "children": []},
         {"type": "frame", "id": "f2", "title": "H1", "description": "desc", "children": [
@@ -546,7 +564,58 @@ def test_serialize_for_llm_skips_empty_frames():
         ]},
     ]
     evidence_map = {"e1": "fact one"}
-    result = serialize_for_llm(tree, evidence_map)
+    result = serialize_xml(tree, evidence_map)
     assert "H1" in result
     assert "fact one" in result
-    assert "Adicione" not in result
+    assert "<schematization>" in result
+    assert "</schematization>" in result
+
+
+def test_strip_suggestions_removes_top_level():
+    tree = [
+        {"type": "evidence", "id": "e1"},
+        {"type": "evidence", "id": "e2", "suggestion": True},
+        {"type": "frame", "id": "f1", "title": "H", "children": []},
+    ]
+    result = strip_suggestions(tree)
+    ids = [n["id"] for n in result]
+    assert "e1" in ids
+    assert "e2" not in ids
+    assert "f1" in ids
+
+
+def test_strip_suggestions_removes_nested():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "H", "children": [
+            {"type": "evidence", "id": "e1", "rel": "elaborate"},
+            {"type": "evidence", "id": "e2", "rel": "question", "suggestion": True},
+        ]},
+    ]
+    result = strip_suggestions(tree)
+    children = result[0]["children"]
+    assert len(children) == 1
+    assert children[0]["id"] == "e1"
+
+
+def test_strip_suggestions_preserves_non_suggestions():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "H", "children": [
+            {"type": "evidence", "id": "e1", "rel": "elaborate"},
+        ]},
+        {"type": "evidence", "id": "e2"},
+    ]
+    result = strip_suggestions(tree)
+    assert len(result) == 2
+    assert result[0]["children"][0]["id"] == "e1"
+    assert result[1]["id"] == "e2"
+
+
+def test_strip_suggestions_does_not_mutate_input():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "H", "children": [
+            {"type": "evidence", "id": "e1", "rel": "elaborate", "suggestion": True},
+        ]},
+    ]
+    strip_suggestions(tree)
+    assert len(tree[0]["children"]) == 1
+    assert tree[0]["children"][0]["suggestion"] is True

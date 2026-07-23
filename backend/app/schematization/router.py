@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.ai.orchestrator import force_build_case, force_extract, force_search
+from app.ai.orchestrator import force_build_case, force_extract, force_search, force_story
 from app.auth.dependency import require_auth
 from app.database import get_db
 from app.schematization.service import (
@@ -16,6 +16,7 @@ from app.schematization.service import (
     remove_evidence,
     remove_node,
     update_frame,
+    update_node,
 )
 
 router = APIRouter(
@@ -47,6 +48,10 @@ class CreateFrameRequest(BaseModel):
 
 class UpdateFrameRequest(BaseModel):
     title: str | None = None
+    description: str | None = None
+
+
+class UpdateNodeRequest(BaseModel):
     description: str | None = None
 
 
@@ -117,6 +122,20 @@ def remove_fr(
     return SchematizationResponse.model_validate(row)
 
 
+@router.patch("/nodes/{node_id}", response_model=SchematizationResponse)
+def update_nd(
+    ws_id: uuid.UUID,
+    node_id: uuid.UUID,
+    body: UpdateNodeRequest,
+    db: Session = Depends(get_db),
+) -> SchematizationResponse:
+    try:
+        row = update_node(db, ws_id, node_id, body.description)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return SchematizationResponse.model_validate(row)
+
+
 @router.post(
     "/nodes/{node_id}/move", response_model=SchematizationResponse
 )
@@ -164,4 +183,10 @@ def ai_extract(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
 @router.post("/ai-build-case", status_code=202)
 def ai_build_case(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
     started = force_build_case(db, ws_id)
+    return {"status": "accepted" if started else "already_running"}
+
+
+@router.post("/ai-story", status_code=202)
+def ai_story(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+    started = force_story(db, ws_id)
     return {"status": "accepted" if started else "already_running"}

@@ -15,6 +15,7 @@ class Pipeline(str, Enum):
     SEARCH = "search"
     EXTRACT = "extract"
     BUILD_CASE = "build_case"
+    STORY = "story"
 
 
 _locks: dict[tuple[str, Pipeline], threading.Lock] = {}
@@ -41,13 +42,15 @@ def _pipeline_hash(
     shoebox_ids: list[str],
     evidence_ids: list[str],
 ) -> str:
-    from app.schematization.service import strip_empty_frames
+    from app.schematization.service import strip_empty_frames, strip_suggestions
 
-    filtered = strip_empty_frames(schema_data)
+    filtered = strip_suggestions(strip_empty_frames(schema_data))
     if pipeline == Pipeline.SEARCH:
         return _compute_hash(filtered, shoebox_ids)
     if pipeline == Pipeline.EXTRACT:
         return _compute_hash(filtered, shoebox_ids, evidence_ids)
+    if pipeline == Pipeline.STORY:
+        return _compute_hash(filtered)
     return _compute_hash(filtered, evidence_ids)
 
 
@@ -158,7 +161,7 @@ def check_and_trigger(db: Session, workspace_id: uuid.UUID) -> bool:
     schema_data, shoebox_ids, evidence_ids = _load_state(db, workspace_id)
     ws_str = str(workspace_id)
 
-    from app.ai import search_and_query, read_and_extract, build_case
+    from app.ai import search_and_query, read_and_extract, build_case, tell_story
 
     try_run(
         ws_str,
@@ -181,6 +184,19 @@ def check_and_trigger(db: Session, workspace_id: uuid.UUID) -> bool:
             Pipeline.BUILD_CASE,
             lambda: build_case.run(workspace_id),
             _pipeline_hash(Pipeline.BUILD_CASE, schema_data, shoebox_ids, evidence_ids),
+        )
+
+    has_schema_nodes = any(
+        n.get("type") == "frame"
+        or (n.get("type") == "evidence" and not n.get("suggestion"))
+        for n in schema_data
+    )
+    if has_schema_nodes:
+        try_run(
+            ws_str,
+            Pipeline.STORY,
+            lambda: tell_story.run(workspace_id),
+            _pipeline_hash(Pipeline.STORY, schema_data, shoebox_ids, evidence_ids),
         )
 
     return is_any_running(workspace_id)
@@ -225,6 +241,20 @@ def force_build_case(db: Session, workspace_id: uuid.UUID) -> bool:
         str(workspace_id),
         Pipeline.BUILD_CASE,
         lambda: build_case.run(workspace_id),
+        "",
+        force=True,
+    )
+
+
+def force_story(db: Session, workspace_id: uuid.UUID) -> bool:
+    from app import settings
+    if not settings.ANTHROPIC_API_KEY:
+        return False
+    from app.ai import tell_story
+    return try_run(
+        str(workspace_id),
+        Pipeline.STORY,
+        lambda: tell_story.run(workspace_id),
         "",
         force=True,
     )

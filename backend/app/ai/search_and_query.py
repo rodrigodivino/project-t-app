@@ -6,23 +6,23 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.ai import get_llm
+from app.ai.read_and_extract import GLOSSARY
 from app.database import SessionLocal
-from app.settings import ANTHROPIC_API_KEY
 from app.evidence import service as evidence_service
+from app.settings import ANTHROPIC_API_KEY
 from app.shoebox import service as shoebox_service
 from app.sources import service as sources_service
-from app.ai.read_and_extract import GLOSSARY
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = f"""\
 {GLOSSARY}
 
-Você opera no passo "Search and Filter". Seu papel: gerar consultas \
+Você opera no passo 1, "Search and Filter". Seu papel: gerar consultas \
 SQL contra a fonte de dados externa para encontrar dados que possam \
 se tornar evidências para elaborar, questionar ou cancelar nós da \
 esquematização atual. Os resultados são depositados no shoebox.
@@ -76,13 +76,11 @@ time) quando a evolução temporal varia por bairro). A métrica pode \
 ser expressa como percentual (ex: COUNT(*)::float / SUM(COUNT(*)) \
 OVER () * 100 AS pct) quando proporções relativas são mais \
 informativas do que valores absolutos.
-- Quando a consulta agrupa timestamps com date_trunc, mantenha o \
-resultado como timestamp no SELECT e ordene por ele. Exemplo: \
+- Quando a consulta agrupa timestamps, use date_trunc e mantenha o \
+resultado como timestamp no SELECT. Ordene por ele. Exemplo: \
 date_trunc('hour', time) AS hora com ORDER BY 1. Não aplique \
-to_char nem cast para TEXT sobre date_trunc. \
-Quando usar extract (hour, dow), concatene uma unidade legível: \
-extract(hour FROM time)::int || 'h' AS hora com \
-ORDER BY extract(hour FROM time).
+to_char, cast para TEXT, nem extract sobre colunas de tempo. \
+Colunas temporais no resultado devem ser sempre timestamps.
 - Toda expressão não-agregada no SELECT deve aparecer no GROUP BY \
 (ou ser derivada dele). Correto: GROUP BY date_trunc('day', time) \
 com date_trunc('day', time) AS dia no SELECT. Incorreto: \
@@ -96,6 +94,10 @@ Use LIMIT somente em consultas que listam linhas individuais \
 itens já existentes no shoebox.
 - Ao usar ROUND com precisão, converta para numeric antes: \
 ROUND((expr)::numeric, 2). PostgreSQL não aceita ROUND(float, int).
+- Quando uma consulta distingue categorias, as categorias devem \
+aparecer como valores em uma coluna de dimensão (long format), não \
+como nomes de colunas separadas (wide format). Cada coluna do \
+resultado deve corresponder a um encoding de visualização.
 - Mantenha as consultas simples e rápidas. Use sempre o nome da tabela \
 post_rede_social_himark. Não use CTEs ou subconsultas a menos que \
 necessário.
@@ -107,10 +109,10 @@ localizar picos de atividade na crise". Sem parênteses, sem apostos. \
 O SQL permanece em inglês.
 
 Estratégia de equilíbrio:
-- Examine a linha "Cobertura" de cada frame. Priorize consultas que \
-preencham lacunas na cobertura de relações. Um frame com 2 \
-elaborações e 0 questionamentos precisa de dados que o desafiem, \
-não de mais apoio.
+- Examine os atributos elaborations, questions e cancellations de \
+cada nó na esquematização XML. Priorize consultas que preencham \
+lacunas na cobertura de relações. Um frame com elaborations="2" \
+e questions="0" precisa de dados que o desafiem, não de mais apoio.
 - Se uma relação cancel já existe em um nó, busque dados que testem \
 se essa invalidação se sustenta ou se ela própria pode ser \
 questionada.
@@ -131,56 +133,49 @@ class SearchQuery(BaseModel):
     sql: str
     explanation: str
 
+    @model_validator(mode="after")
+    def strip_whitespace(self):
+        self.sql = self.sql.strip()
+        self.explanation = self.explanation.strip()
+        return self
+
 
 class SearchQueries(BaseModel):
     queries: list[SearchQuery] = Field(default_factory=list)
 
 
-def build_prompt(schematization_context: str, existing_items: list[dict]) -> str:
+def build_prompt(schematization_context: str, shoebox_xml: str) -> str:
     parts = [
         "Estado atual da esquematização:\n\n",
         schematization_context,
         "\n\n",
-    ]
-    if existing_items:
-        parts.append(
-            "O shoebox já contém os seguintes itens "
-            "(consulta + explicação + amostra de linhas). "
-            "Evite gerar consultas que dupliquem essa cobertura:\n\n"
-        )
-        for i, item in enumerate(existing_items, 1):
-            parts.append(f"--- Item {i} ---\n")
-            parts.append(f"Consulta: {item['query']}\n")
-            parts.append(f"Explicação: {item['explanation']}\n")
-            if item.get("sample_rows"):
-                parts.append(
-                    f"Amostra: {json.dumps(item['sample_rows'], indent=2, default=str)}\n"
-                )
-            parts.append("\n")
-    else:
-        parts.append("O shoebox está vazio.\n\n")
-
-    parts.append(
+        "Estado atual do shoebox:\n\n",
+        shoebox_xml,
+        "\n\n",
         "Produza até 3 consultas SQL SELECT (tipicamente 1 ou 2) contra "
         "post_rede_social_himark que busquem dados capazes de elaborar, "
         "questionar ou cancelar nós da esquematização. Se os itens "
         "existentes já cobrem bem a esquematização, produza menos ou "
         "nenhuma consulta. Priorize equilíbrio entre relações e "
-        "cobertura dos nós no topo da árvore."
-    )
+        "cobertura dos nós no topo da árvore.",
+    ]
     return "".join(parts)
 
 
 def call_llm(
-    schematization_context: str, existing_items: list[dict],
+    schematization_context: str,
+    shoebox_xml: str,
 ) -> SearchQueries:
     structured = get_llm().with_structured_output(SearchQueries, method="json_schema")
-    result = structured.invoke([
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(
-            content=build_prompt(schematization_context, existing_items),
-        ),
-    ])
+    prompt = build_prompt(schematization_context, shoebox_xml)
+    logger.warning("[search_and_query] LLM input:\n%s", prompt)
+    result = structured.invoke(
+        [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=prompt),
+        ]
+    )
+    logger.warning("[search_and_query] LLM output:\n%s", result)
     return result  # type: ignore[return-value]
 
 
@@ -275,6 +270,13 @@ class ChartSpec(BaseModel):
     explanation: str = ""
     spec: str | None = None
 
+    @model_validator(mode="after")
+    def strip_whitespace(self):
+        self.explanation = self.explanation.strip()
+        if self.spec is not None:
+            self.spec = self.spec.strip()
+        return self
+
 
 def _chart_messages(sql: str, explanation: str, rows: list[dict]) -> list:
     columns = list(rows[0].keys())
@@ -311,11 +313,16 @@ def _parse_spec(raw: str | None) -> dict | None:
 
 
 def generate_chart(
-    sql: str, explanation: str, rows: list[dict],
+    sql: str,
+    explanation: str,
+    rows: list[dict],
 ) -> dict | None:
     if not ANTHROPIC_API_KEY or not rows:
         return None
-    result = _chart_llm().invoke(_chart_messages(sql, explanation, rows))
+    msgs = _chart_messages(sql, explanation, rows)
+    logger.warning("[chart] LLM input:\n%s", msgs[1].content)
+    result = _chart_llm().invoke(msgs)
+    logger.warning("[chart] LLM output:\n%s", result)
     return _parse_spec(result.spec)  # type: ignore[union-attr]
 
 
@@ -324,15 +331,15 @@ def generate_charts_batch(
 ) -> list[dict | None]:
     if not ANTHROPIC_API_KEY:
         return [None] * len(items)
-    eligible = [
-        (i, sql, exp, rows)
-        for i, (sql, exp, rows) in enumerate(items)
-        if rows
-    ]
+    eligible = [(i, sql, exp, rows) for i, (sql, exp, rows) in enumerate(items) if rows]
     if not eligible:
         return [None] * len(items)
     messages = [_chart_messages(sql, exp, rows) for _, sql, exp, rows in eligible]
+    for idx, msg in enumerate(messages):
+        logger.warning("[chart-batch:%d] LLM input:\n%s", idx, msg[1].content)
     raw = _chart_llm().batch(messages)
+    for idx, result in enumerate(raw):
+        logger.warning("[chart-batch:%d] LLM output:\n%s", idx, result)
     specs: list[dict | None] = [None] * len(items)
     for (i, _, _, _), result in zip(eligible, raw):
         specs[i] = _parse_spec(result.spec) if result else None
@@ -358,22 +365,28 @@ def _clean_rows(rows: list[dict]) -> list[dict]:
 def run(
     workspace_id: uuid.UUID,
     schematization_data: dict,
-    llm_caller: Callable[[str, list[dict]], SearchQueries] = call_llm,
+    llm_caller: Callable[[str, str], SearchQueries] = call_llm,
     session_factory: Callable[[], Session] = SessionLocal,
-    items_loader: Callable[..., list[dict]] = shoebox_service.list_summaries_for_prompt,
+    shoebox_loader: Callable = None,
 ) -> None:
     db: Session = session_factory()
     try:
         from app.schematization.service import (
-            _normalize_data, serialize_for_llm,
+            _normalize_data,
+            serialize_xml,
         )
+
         evidence_items = evidence_service.list_items(db, workspace_id)
         evidence_map = {str(item.id): item.content for item in evidence_items}
         tree = _normalize_data(schematization_data)
-        schema_context = serialize_for_llm(tree, evidence_map)
+        schema_context = serialize_xml(tree, evidence_map)
 
-        existing = items_loader(db, workspace_id)
-        queries = llm_caller(schema_context, existing)
+        if shoebox_loader is not None:
+            shoebox_items = shoebox_loader(db, workspace_id)
+        else:
+            shoebox_items = shoebox_service.list_items(db, workspace_id)
+        shoebox_xml = shoebox_service.serialize_xml(shoebox_items)
+        queries = llm_caller(schema_context, shoebox_xml)
         executed: list[tuple[SearchQuery, list[dict]]] = []
         for q in queries.queries:
             try:
@@ -393,12 +406,15 @@ def run(
             charts = [None] * len(executed)
         for (q, clean), chart in zip(executed, charts):
             shoebox_service.add_item(
-                db, workspace_id, q.sql, q.explanation,
-                clean, ai_authored=True, chart_spec=chart,
+                db,
+                workspace_id,
+                q.sql,
+                q.explanation,
+                clean,
+                ai_authored=True,
+                chart_spec=chart,
             )
     except Exception:
-        logger.exception(
-            "search_and_query failed for workspace %s", workspace_id
-        )
+        logger.exception("search_and_query failed for workspace %s", workspace_id)
     finally:
         db.close()

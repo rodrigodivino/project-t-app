@@ -41,18 +41,49 @@ def add_item(
     return item
 
 
-def list_summaries_for_prompt(
-    db: Session, workspace_id: uuid.UUID, max_sample_rows: int = 10,
-) -> list[dict]:
-    items = list_items(db, workspace_id)
-    return [
-        {
-            "query": item.query,
-            "explanation": item.explanation,
-            "sample_rows": item.result[:max_sample_rows],
-        }
-        for item in items
-    ]
+def _xml_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _xml_tag(name: str) -> str:
+    safe = name.replace(" ", "_")
+    if safe[0:1].isdigit():
+        safe = f"_{safe}"
+    return safe
+
+
+def _xml_row(row: dict, prefix: str) -> list[str]:
+    lines = [f"{prefix}<row>"]
+    for col, val in row.items():
+        tag = _xml_tag(col)
+        lines.append(f"{prefix}  <{tag}>{_xml_escape(str(val))}</{tag}>")
+    lines.append(f"{prefix}</row>")
+    return lines
+
+
+def _xml_item_lines(item: ShoeboxItem, indent: int) -> list[str]:
+    prefix = "  " * indent
+    lines = [f'{prefix}<item id="{item.id}">']
+    lines.append(f"{prefix}  <query>{_xml_escape(item.query)}</query>")
+    lines.append(f"{prefix}  <explanation>{_xml_escape(item.explanation)}</explanation>")
+    for row in item.result:
+        lines.extend(_xml_row(row, prefix + "  "))
+    lines.append(f"{prefix}</item>")
+    return lines
+
+
+def serialize_xml(items: list[ShoeboxItem]) -> str:
+    if not items:
+        return "<shoebox/>"
+    lines = ["<shoebox>"]
+    for item in items:
+        lines.extend(_xml_item_lines(item, indent=0))
+    lines.append("</shoebox>")
+    return "\n".join(lines)
+
+
+def serialize_xml_item(item: ShoeboxItem) -> str:
+    return "\n".join(_xml_item_lines(item, indent=0))
 
 
 def remove_item(db: Session, item_id: uuid.UUID) -> bool:

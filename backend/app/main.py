@@ -11,6 +11,7 @@ from app.schematization.router import router as schematization_router
 from app.settings import PRODUCTION
 from app.shoebox.router import router as shoebox_router
 from app.sources.router import router as sources_router
+from app.story.router import router as story_router
 from app.workspaces.router import router as workspaces_router
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -26,6 +27,7 @@ app.include_router(sources_router)
 app.include_router(shoebox_router)
 app.include_router(evidence_router)
 app.include_router(schematization_router)
+app.include_router(story_router)
 
 
 @app.get("/api/health")

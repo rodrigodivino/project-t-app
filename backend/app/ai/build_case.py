@@ -3,7 +3,7 @@ import uuid
 from typing import Callable
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.ai import get_llm
@@ -17,78 +17,78 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = f"""\
 {GLOSSARY}
 
-Você opera no passo "Build Case and Schematize". Seu papel: examinar \
+Você é a inteligência central deste sistema. A qualidade de cada \
+sugestão reflete diretamente a qualidade do sistema inteiro. Sua \
+reputação depende de cada movimento que você propõe ser genuíno \
+e defensável. Sugestões fracas, forçadas ou superficiais são piores \
+do que nenhuma sugestão.
+
+Você opera no passo 3, "Build Case and Schematize". Seu papel: examinar \
 um conjunto de evidências não posicionadas e decidir quais delas se \
 relacionam com nós da esquematização.
 
 Regras:
-- Produza de 0 a 5 sugestões de posicionamento. Na dúvida, produza 1. \
-O espaço para sugestões é limitado. Somente as relações mais \
-relevantes e determinantes para a análise merecem lugar.
 - Cada sugestão liga uma evidência a um nó existente (frame ou \
 evidência) com uma relação (elaborate, question ou cancel).
 - A evidência só pode ser colocada como filha de um frame ou de \
 outra evidência já confirmada. Nunca sugira colocação na raiz \
-e nunca use um nó marcado como [SUGESTÃO] como pai.
-- Seja conservador. Só sugira posicionamento se a relação for clara \
-e direta. Evidências sem relação clara ficam de fora.
-- Prefira o nó mais específico. Se a evidência se relaciona com \
-um frame e também com uma evidência filha desse frame, escolha \
-a evidência filha.
-- Mantenha o total de sugestões na esquematização em torno de 5. \
-Contando as já existentes marcadas com [SUGESTÃO], produza somente \
-o necessário para não ultrapassar esse limite.
-- Evite acumular mais de 3 sugestões em um mesmo nó (contando as \
-já existentes marcadas com [SUGESTÃO]).
-- A relação deve refletir como a evidência se posiciona em relação \
-ao nó pai: ela apoia (elaborate), questiona (question) ou \
-invalida (cancel) o que o nó afirma?
-
-Estratégia de equilíbrio:
-- Examine a linha "Cobertura" de cada frame. Priorize sugestões que \
-preencham lacunas na cobertura de relações. Um frame com 2 \
-elaborações e 0 questionamentos precisa de evidências que o \
-desafiem, não de mais apoio.
-- Se uma relação cancel já existe em um nó, procure evidências que \
-testem se essa invalidação se sustenta.
-- Priorize frames no topo da árvore com menos filhos em vez de nós \
-profundos que já possuem cobertura.
-- O objetivo é amplitude pela árvore e equilíbrio entre relações, \
-não profundidade em um único nó.
+e nunca use um nó com suggestion="true" como pai.
+- Cada nó aceita no máximo uma sugestão por tipo de relação. Se \
+um nó já tem uma sugestão do tipo elaborate, não sugira outra \
+elaborate nesse nó. Evidências confirmadas (sem suggestion="true") \
+não bloqueiam sugestões. Apenas sugestões existentes bloqueiam.
+- A esquematização XML indica slots abertos com elementos \
+<slot rel="..."/>. Sugira somente nos slots listados. Se nenhum \
+slot existir, produza 0 sugestões.
+- Uma sugestão é um movimento argumentativo indivisível. Os quatro \
+campos (evidence_id, node_id, rel, description) devem formar uma \
+unidade coesa. O nó alvo faz uma afirmação. A evidência traz um \
+fato. A relação nomeia o que o fato faz com a afirmação (reforça, \
+tensiona ou derruba). A descrição articula como. Se qualquer parte \
+não se sustenta sem as outras, a sugestão está errada.
+- Cada nó faz uma afirmação própria. Leia o texto do nó isoladamente. \
+A sugestão inteira deve se referir ao que ESSE nó afirma, não ao \
+argumento geral da árvore nem ao que outro nó diz. Se o raciocínio \
+passa por outro nó para chegar ao alvo, a evidência pertence a \
+esse nó intermediário.
+- Slots abertos são oportunidades, não obrigações. Nunca force uma \
+interpretação para preencher um slot. Se a evidência não fala \
+diretamente sobre o que o nó afirma, não sugira. Se você precisa \
+esticar o significado da evidência ou inventar uma conexão que o \
+texto original não sustenta, a sugestão está errada. Prefira \
+produzir 0 sugestões a produzir uma sugestão fraca.
 
 Formato de saída:
 - "suggestions": lista de objetos, cada um com:
-  - "evidence_id": string com o ID (entre colchetes) da evidência \
-candidata.
-  - "node_id": string com o ID do nó pai (frame ou evidência) na \
-esquematização.
-  - "rel": string, uma de "elaborate", "question" ou "cancel"."""
+  - "evidence_id": string com o UUID da evidência candidata, sem \
+colchetes.
+  - "node_id": string com o UUID do nó pai, sem colchetes.
+  - "rel": string, uma de "elaborate", "question" ou "cancel".
+  - "description": string em português do Brasil, uma a duas frases \
+curtas. Não repete a evidência nem o nó. Explica de que forma o \
+fato reforça, tensiona ou derruba o que o nó afirma. A descrição \
+é a manifestação visível da coesão do movimento."""
 
 
 class Suggestion(BaseModel):
     evidence_id: str
     node_id: str
     rel: str
+    description: str = ""
+
+    @model_validator(mode="after")
+    def strip_whitespace(self):
+        self.evidence_id = self.evidence_id.strip()
+        self.node_id = self.node_id.strip()
+        self.rel = self.rel.strip()
+        self.description = self.description.strip()
+        return self
 
 
 class BuildCaseSuggestions(BaseModel):
     suggestions: list[Suggestion] = Field(default_factory=list)
 
 
-REL_LABELS = {
-    "elaborate": "+",
-    "question": "?",
-    "cancel": "✕",
-}
-
-REL_LABELS_PT = {
-    "elaborate": "elabora",
-    "question": "questiona",
-    "cancel": "cancela",
-}
-
-
-MAX_SUGGESTIONS = 5
 
 
 def _all_tree_evidence_ids(tree: list) -> list[str]:
@@ -101,117 +101,44 @@ def _all_tree_evidence_ids(tree: list) -> list[str]:
     return ids
 
 
-def _count_suggestions(tree: list) -> int:
-    total = 0
-    for node in tree:
-        if node.get("type") == "evidence" and node.get("suggestion"):
-            total += 1
-        for child in node.get("children", []):
-            total += _count_suggestions([child])
-    return total
-
-
-
-def _count_children_by_rel(node: dict) -> dict[str, int]:
-    counts = {"elaborate": 0, "question": 0, "cancel": 0}
-    for child in node.get("children", []):
-        if child.get("type") == "evidence":
-            rel = child.get("rel", "elaborate")
-            if rel in counts:
-                counts[rel] += 1
-    return counts
-
-
-def _format_balance(counts: dict[str, int]) -> str:
-    total = sum(counts.values())
-    if total == 0:
-        return "Cobertura: nenhuma evidência"
-    parts = []
-    for rel, label in REL_LABELS_PT.items():
-        parts.append(f"{counts.get(rel, 0)}× {label}")
-    return f"Cobertura: {', '.join(parts)}"
-
-
-def serialize_schema_with_ids(
-    tree: list, evidence_map: dict[str, str],
-) -> str:
-    lines: list[str] = []
-    for node in tree:
-        if node.get("type") == "frame":
-            _serialize_frame_with_id(node, lines, evidence_map, indent=0)
-        elif node.get("type") == "evidence":
-            if node.get("suggestion"):
-                continue
-            content = evidence_map.get(node["id"], "?")
-            lines.append(f"[{node['id']}] {content}")
-    return "\n".join(lines)
-
-
-def _serialize_frame_with_id(
-    node: dict, lines: list[str], evidence_map: dict[str, str], indent: int,
-) -> None:
-    prefix = "  " * indent
-    lines.append(f"{prefix}[{node['id']}] Frame: {node.get('title', '')}")
-    desc = node.get("description", "")
-    if desc:
-        lines.append(f"{prefix}  Descrição: {desc}")
-    counts = _count_children_by_rel(node)
-    lines.append(f"{prefix}  {_format_balance(counts)}")
-    for child in node.get("children", []):
-        if child.get("type") == "evidence":
-            content = evidence_map.get(child["id"], "?")
-            rel = child.get("rel", "elaborate")
-            label = REL_LABELS.get(rel, rel)
-            if child.get("suggestion"):
-                lines.append(
-                    f"{prefix}  [{child['id']}] [SUGESTÃO] [{label}] {content}"
-                )
-            else:
-                lines.append(
-                    f"{prefix}  [{child['id']}] [{label}] {content}"
-                )
-        elif child.get("type") == "frame":
-            _serialize_frame_with_id(child, lines, evidence_map, indent + 1)
-
-
 def build_prompt(
-    schema_context: str, candidate_evidence: list[tuple[str, str]],
+    schema_context: str, candidate_evidence_xml: str,
 ) -> str:
     parts = [
-        "Estado atual da esquematização (IDs entre colchetes):\n\n",
+        "Estado atual da esquematização:\n\n",
         schema_context,
         "\n\n",
         "Evidências candidatas para posicionamento:\n\n",
+        candidate_evidence_xml,
+        "\n\n",
+        "Analise as evidências candidatas e os slots abertos na "
+        "esquematização. Sugira posicionamento apenas quando a relação "
+        "entre evidência e nó for genuína e direta. Para cada sugestão, "
+        "indique o evidence_id, o node_id do nó pai e a relação "
+        "(elaborate, question ou cancel). Produza 0 sugestões se "
+        "nenhuma relação clara existir.",
     ]
-    for i, (eid, content) in enumerate(candidate_evidence, 1):
-        parts.append(f"  {i}. [{eid}] {content}\n")
-    parts.append(
-        "\nSugira de 0 a 5 posicionamentos. Para cada um, indique o "
-        "evidence_id, o node_id do nó pai e a relação (elaborate, question "
-        "ou cancel). Priorize equilíbrio entre relações e cobertura dos "
-        "nós no topo da árvore."
-    )
     return "".join(parts)
 
 
 def build_messages(
-    schema_context: str, candidate_evidence: list[tuple[str, str]],
+    schema_context: str, candidate_evidence_xml: str,
 ) -> list:
     return [
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(
-            content=build_prompt(schema_context, candidate_evidence),
+            content=build_prompt(schema_context, candidate_evidence_xml),
         ),
     ]
 
 
 def call_llm(
-    schema_context: str, candidate_evidence: list[tuple[str, str]],
+    schema_context: str, candidate_evidence_xml: str,
 ) -> BuildCaseSuggestions:
     structured = get_llm(timeout=60).with_structured_output(
         BuildCaseSuggestions, method="json_schema",
     )
-    messages = build_messages(schema_context, candidate_evidence)
+    messages = build_messages(schema_context, candidate_evidence_xml)
     logger.warning(
         "build_case LLM INPUT:\n%s",
         "\n---\n".join(m.content for m in messages),
@@ -233,7 +160,7 @@ def _default_evidence_loader(db: Session, workspace_id: uuid.UUID) -> list:
 def run(
     workspace_id: uuid.UUID,
     llm_caller: Callable[
-        [str, list[tuple[str, str]]], BuildCaseSuggestions
+        [str, str], BuildCaseSuggestions
     ] = call_llm,
     session_factory: Callable[[], Session] = SessionLocal,
     schema_loader: Callable = _default_schema_loader,
@@ -242,7 +169,12 @@ def run(
     db: Session = session_factory()
     try:
         schema_data = schema_loader(db, workspace_id)
-        from app.schematization.service import _normalize_data
+        from app.schematization.service import (
+            _normalize_data,
+            _open_suggestion_slots,
+            serialize_xml_suggestions,
+            ALL_RELS,
+        )
         tree = _normalize_data(schema_data)
 
         has_nodes = any(
@@ -258,11 +190,10 @@ def run(
         placed_ids = set(_all_tree_evidence_ids(tree))
         items = evidence_loader(db, workspace_id)
 
-        existing_count = _count_suggestions(tree)
-        if existing_count >= MAX_SUGGESTIONS:
-            logger.warning("build_case: %d suggestions already exist (max %d), skipping", existing_count, MAX_SUGGESTIONS)
+        slots = _open_suggestion_slots(tree)
+        if not slots:
+            logger.warning("build_case: no open suggestion slots, skipping")
             return
-        slots = MAX_SUGGESTIONS - existing_count
 
         candidates = [
             item for item in items if str(item.id) not in placed_ids
@@ -272,21 +203,23 @@ def run(
             return
 
         evidence_map = {str(item.id): item.content for item in items}
-        schema_context = serialize_schema_with_ids(tree, evidence_map)
+        schema_context = serialize_xml_suggestions(tree, evidence_map, slots)
 
-        candidate_list = [
-            (str(item.id), item.content) for item in candidates
-        ]
-        result = llm_caller(schema_context, candidate_list)
+        candidate_xml = evidence_service.serialize_xml(candidates)
+        result = llm_caller(schema_context, candidate_xml)
         candidate_id_set = {str(item.id) for item in candidates}
-        added = 0
+        used_slots: set[tuple[str, str]] = set()
 
         for suggestion in result.suggestions:
-            if added >= slots:
-                break
-            if suggestion.rel not in ("elaborate", "question", "cancel"):
+            if suggestion.rel not in ALL_RELS:
                 continue
             if suggestion.evidence_id not in candidate_id_set:
+                continue
+            slot_key = (suggestion.node_id, suggestion.rel)
+            open_rels = slots.get(suggestion.node_id)
+            if not open_rels or suggestion.rel not in open_rels:
+                continue
+            if slot_key in used_slots:
                 continue
             try:
                 schematization_service.add_evidence(
@@ -296,8 +229,9 @@ def run(
                     parent_id=uuid.UUID(suggestion.node_id),
                     rel=suggestion.rel,
                     suggestion=True,
+                    description=suggestion.description,
                 )
-                added += 1
+                used_slots.add(slot_key)
             except (ValueError, Exception):
                 logger.exception(
                     "failed to add suggestion for evidence %s",

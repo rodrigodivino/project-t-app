@@ -203,7 +203,7 @@ interface DropIndicator {
             Esquematização
             <button class="ai-search-btn"
                     [class.ai-search-cooking]="aiBuildCaseRunning"
-                    [disabled]="aiBuildCaseRunning || evidenceItems.length === 0 || knownSuggestionIds.size >= 5"
+                    [disabled]="aiBuildCaseRunning || evidenceItems.length === 0"
                     (click)="triggerAiBuildCase()"
                     title="Sugerir esquematização IA">
               <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
@@ -222,7 +222,7 @@ interface DropIndicator {
                 <div class="schema-node schema-node-evidence"
                      [class.schema-node-cancelled]="isCancelled(node)"
                      [class.schema-node-suggestion]="node.suggestion"
-                     [draggable]="!node.suggestion"
+                     [attr.draggable]="node.suggestion ? null : 'true'"
                      (dragstart)="onSchemaDragStart($event, node)"
                      [attr.data-node-id]="node.id"
                      (click)="onEvidenceNodeClick($event, node.evidence, node)">
@@ -250,6 +250,29 @@ interface DropIndicator {
                       </svg>
                     </button>
                   </div>
+                  @if (node.rel) {
+                    @if (node.suggestion) {
+                      <p class="frame-description" [class.frame-description-empty]="!node.description">
+                        {{ node.description || '' }}
+                      </p>
+                    } @else if (editingDescId === node.id) {
+                      <textarea class="frame-desc-input"
+                                [value]="node.description || ''"
+                                (blur)="saveEvidenceDesc($event, node.id)"
+                                (keydown.enter)="$any($event.target).blur()"
+                                rows="2"
+                                #frameDescInput></textarea>
+                    } @else {
+                      <p class="frame-description" [class.frame-description-empty]="!node.description" (click)="startEditingDesc(node.id)">
+                        {{ node.description || 'Descreva a relação...' }}
+                        <svg class="pen-icon" width="10" height="10" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                        </svg>
+                      </p>
+                    }
+                  }
                   @if (node.children.length > 0 || dropIndicator?.parentId === node.id) {
                     <div class="evidence-children" [attr.data-node-id]="node.id">
                       @if (dropIndicator?.parentId === node.id && dropIndicator?.index === 0) {
@@ -270,6 +293,7 @@ interface DropIndicator {
                      [class.schema-node-cancelled]="isCancelled(node)"
                      [draggable]="true"
                      (dragstart)="onSchemaDragStart($event, node)"
+                     (click)="$event.stopPropagation()"
                      [attr.data-node-id]="node.id">
                   <div class="frame-header">
                     @if (node.rel) {
@@ -359,6 +383,32 @@ interface DropIndicator {
               <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
           </button>
+        </section>
+
+        <section class="board-column story-column">
+          <h2>
+            História
+            <button class="ai-search-btn"
+                    [class.ai-search-cooking]="aiStoryRunning"
+                    [disabled]="aiStoryRunning || schemaData.length === 0"
+                    (click)="triggerAiStory()"
+                    title="Gerar história IA">
+              <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
+                   fill="currentColor" stroke="none">
+                <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z"/>
+              </svg>
+            </button>
+          </h2>
+          @if (aiStoryRunning) {
+            <div class="ai-shimmer"></div>
+          }
+          <div class="column-body">
+            @if (storyContent) {
+              <div class="story-prose">{{ storyContent }}</div>
+            } @else {
+              <p class="placeholder">Nenhuma história criada</p>
+            }
+          </div>
         </section>
       </div>
     </div>
@@ -638,9 +688,12 @@ interface DropIndicator {
     }
 
     .schema-column {
-      width: auto;
-      flex: 1;
+      width: 40%;
+      flex-shrink: 0;
       min-width: 300px;
+    }
+
+    .story-column {
       border-right: none;
     }
 
@@ -687,6 +740,7 @@ interface DropIndicator {
       border-left: 2px solid var(--color-border);
       margin-top: 4px;
       min-height: 8px;
+      width: 100%;
     }
 
     .schema-node-frame > .frame-header .card-name {
@@ -716,7 +770,7 @@ interface DropIndicator {
     .frame-header {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      gap: 8px;
       width: 100%;
     }
 
@@ -728,6 +782,8 @@ interface DropIndicator {
       display: inline-flex;
       align-items: center;
       gap: 4px;
+      flex: 1;
+      min-width: 0;
     }
 
     .frame-title .pen-icon {
@@ -807,6 +863,7 @@ interface DropIndicator {
       min-height: 28px;
       margin-top: 4px;
       position: relative;
+      width: 100%;
     }
 
     .frame-placeholder {
@@ -875,11 +932,9 @@ interface DropIndicator {
     .schema-node-suggestion {
       background: var(--color-warning-bg, #FEF3C7);
       border: 2px dashed var(--color-warning, #D97706);
-      cursor: default;
-    }
-
-    .schema-node-suggestion[draggable="false"] {
-      cursor: default;
+      cursor: pointer;
+      user-select: text;
+      -webkit-user-select: text;
     }
 
     .schema-node-suggestion .rel-tag:disabled {
@@ -989,6 +1044,25 @@ interface DropIndicator {
       flex-direction: column;
       gap: 6px;
       overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--color-border) transparent;
+    }
+
+    .column-body::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .column-body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .column-body::-webkit-scrollbar-thumb {
+      background: var(--color-border);
+      border-radius: 2px;
+    }
+
+    .column-body::-webkit-scrollbar-thumb:hover {
+      background: var(--color-text-secondary);
     }
 
     .all-docs-btn {
@@ -1696,6 +1770,14 @@ interface DropIndicator {
       margin-top: 2px;
       display: block;
     }
+
+    .story-prose {
+      font-size: 0.8125rem;
+      line-height: 1.6;
+      color: var(--color-text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
   `,
 })
 export class Workbench implements OnInit, OnDestroy {
@@ -1756,6 +1838,8 @@ export class Workbench implements OnInit, OnDestroy {
   aiSearchRunning = false;
   aiExtractRunning = false;
   aiBuildCaseRunning = false;
+  aiStoryRunning = false;
+  storyContent = '';
   private knownShoeboxIds = new Set<string>();
   private shoeboxInitialLoad = true;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1941,8 +2025,12 @@ export class Workbench implements OnInit, OnDestroy {
 
   triggerAiBuildCase(): void {
     if (this.evidenceItems.length === 0) return;
-    if (this.knownSuggestionIds.size >= 5) return;
     this.schemaSvc.triggerAiBuildCase(this.workspaceId).subscribe();
+  }
+
+  triggerAiStory(): void {
+    if (this.schemaData.length === 0) return;
+    this.schemaSvc.triggerAiStory(this.workspaceId).subscribe();
   }
 
   loadShoebox(): void {
@@ -2146,6 +2234,7 @@ export class Workbench implements OnInit, OnDestroy {
           id: node.id,
           rel: node.rel,
           suggestion: node.suggestion,
+          description: node.description,
           evidence: evidenceMap.get(node.id),
           children,
         };
@@ -2333,6 +2422,15 @@ export class Workbench implements OnInit, OnDestroy {
     return false;
   }
 
+  private findResolvedNode(id: string, nodes: ResolvedNode[] = this.schemaResolvedItems): ResolvedNode | null {
+    for (const n of nodes) {
+      if (n.id === id) return n;
+      const found = this.findResolvedNode(id, n.children);
+      if (found) return found;
+    }
+    return null;
+  }
+
   onSchemaDragleave(event: DragEvent): void {
     const target = event.currentTarget as HTMLElement;
     const related = event.relatedTarget as Node | null;
@@ -2352,7 +2450,9 @@ export class Workbench implements OnInit, OnDestroy {
     if (schemaNodeId) {
       const parentId = indicator?.parentId ?? undefined;
       const index = indicator?.index ?? undefined;
-      this.schemaSvc.moveNode(this.workspaceId, schemaNodeId, parentId, index).subscribe((resp) => {
+      const existing = this.findResolvedNode(schemaNodeId);
+      const rel = existing?.rel ?? 'elaborate';
+      this.schemaSvc.moveNode(this.workspaceId, schemaNodeId, parentId, index, rel).subscribe((resp) => {
         this.schemaData = resp.data;
         this.updateFilteredEvidence();
       });
@@ -2397,10 +2497,6 @@ export class Workbench implements OnInit, OnDestroy {
     this.schemaSvc.createFrame(this.workspaceId, '').subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
-      const newFrame = resp.data[resp.data.length - 1];
-      if (newFrame?.type === 'frame') {
-        this.startEditingFrame(newFrame.id);
-      }
     });
   }
 
@@ -2444,6 +2540,16 @@ export class Workbench implements OnInit, OnDestroy {
     });
   }
 
+  saveEvidenceDesc(event: Event, nodeId: string): void {
+    const textarea = event.target as HTMLTextAreaElement;
+    const description = textarea.value.trim();
+    this.editingDescId = null;
+    this.schemaSvc.updateNode(this.workspaceId, nodeId, description).subscribe((resp) => {
+      this.schemaData = resp.data;
+      this.updateFilteredEvidence();
+    });
+  }
+
   private collectSuggestionIds(nodes: SchemaNode[]): Set<string> {
     const ids = new Set<string>();
     for (const node of nodes) {
@@ -2464,6 +2570,8 @@ export class Workbench implements OnInit, OnDestroy {
       this.aiSearchRunning = resp.ai_search_running;
       this.aiExtractRunning = resp.ai_extract_running;
       this.aiBuildCaseRunning = resp.ai_build_case_running;
+      this.aiStoryRunning = resp.ai_story_running;
+      this.storyContent = resp.story;
 
       // shoebox
       if (this.shoeboxInitialLoad) {
@@ -2661,7 +2769,7 @@ export class Workbench implements OnInit, OnDestroy {
       this.verifyCountdown = 0;
       return;
     }
-    this.verifyCountdown = 10;
+    this.verifyCountdown = 5;
     this.verifyTimer = setInterval(() => {
       this.verifyCountdown--;
       if (this.verifyCountdown <= 0) {

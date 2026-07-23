@@ -53,53 +53,56 @@ class FakeSession:
 
 
 def test_build_prompt_contains_schematization():
-    items = [{"id": "abc", "query": "SELECT 1", "explanation": "x", "result": []}]
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], items)
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, "<evidence-file/>", "<shoebox/>")
     assert "ev-1" in prompt
 
 
-def test_build_prompt_empty_evidence_message():
-    items = [{"id": "abc", "query": "SELECT 1", "explanation": "x", "result": []}]
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], items)
-    assert "vazios" in prompt.lower()
+def test_build_prompt_empty_evidence():
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, "<evidence-file/>", "<shoebox/>")
+    assert "<evidence-file/>" in prompt
 
 
 def test_build_prompt_includes_existing_evidence():
-    titles = ["Bairro X teve 100 postagens", "Conta Y postou 50 vezes"]
-    items = [{"id": "abc", "query": "SELECT 1", "explanation": "x", "result": []}]
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, titles, items)
+    evidence_xml = (
+        '<evidence-file>\n'
+        '<evidence id="e1">Bairro X teve 100 postagens</evidence>\n'
+        '<evidence id="e2">Conta Y postou 50 vezes</evidence>\n'
+        '</evidence-file>'
+    )
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, evidence_xml, "<shoebox/>")
     assert "Bairro X teve 100 postagens" in prompt
     assert "Conta Y postou 50 vezes" in prompt
     assert "evite duplicar" in prompt.lower()
 
 
 def test_build_prompt_includes_shoebox_items():
-    items = [
-        {"id": "s1", "query": "SELECT COUNT(*) FROM t", "explanation": "Contagem total",
-         "result": [{"count": 42}]},
-    ]
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], items)
+    shoebox_xml = (
+        '<shoebox>\n<item id="s1">\n  <query>SELECT COUNT(*) FROM t</query>\n'
+        '  <explanation>Contagem total</explanation>\n  <row>\n    <count>42</count>\n'
+        '  </row>\n</item>\n</shoebox>'
+    )
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, "<evidence-file/>", shoebox_xml)
     assert "SELECT COUNT(*)" in prompt
     assert "Contagem total" in prompt
     assert "42" in prompt
-    assert "[s1]" in prompt
+    assert "s1" in prompt
 
 
 def test_build_prompt_multiple_items():
-    items = [
-        {"id": "s1", "query": "Q1", "explanation": "E1", "result": []},
-        {"id": "s2", "query": "Q2", "explanation": "E2", "result": []},
-    ]
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], items)
-    assert "[s1]" in prompt
-    assert "[s2]" in prompt
+    shoebox_xml = (
+        '<shoebox>\n<item id="s1">\n  <query>Q1</query>\n  <explanation>E1</explanation>\n'
+        '</item>\n<item id="s2">\n  <query>Q2</query>\n  <explanation>E2</explanation>\n'
+        '</item>\n</shoebox>'
+    )
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, "<evidence-file/>", shoebox_xml)
+    assert "s1" in prompt
+    assert "s2" in prompt
     assert "Q1" in prompt
     assert "Q2" in prompt
 
 
 def test_build_messages_returns_two_messages():
-    items = [{"id": "abc", "query": "Q", "explanation": "E", "result": []}]
-    msgs = build_messages(SAMPLE_SCHEMA_TEXT, [], items)
+    msgs = build_messages(SAMPLE_SCHEMA_TEXT, "<evidence-file/>", "<shoebox/>")
     assert len(msgs) == 2
 
 
@@ -253,12 +256,10 @@ def test_prompt_includes_balance_annotation():
              {"type": "evidence", "id": "ev-1", "rel": "elaborate"},
          ]},
     ]
-    from app.schematization.service import _normalize_data, serialize_for_llm
+    from app.schematization.service import _normalize_data, serialize_xml
     tree = _normalize_data(schema_tree)
     evidence_map = {"ev-1": "fact one"}
-    schema_context = serialize_for_llm(tree, evidence_map)
-    items = [{"id": "abc", "query": "SELECT 1", "explanation": "x", "result": []}]
-    prompt = build_prompt(schema_context, [], items)
-    assert "Cobertura:" in prompt
-    assert "1× elabora" in prompt
-    assert "0× questiona" in prompt
+    schema_context = serialize_xml(tree, evidence_map)
+    prompt = build_prompt(schema_context, "<evidence-file/>", "<shoebox/>")
+    assert 'elaborations="1"' in prompt
+    assert 'questions="0"' in prompt

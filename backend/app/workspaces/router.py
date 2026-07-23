@@ -11,6 +11,7 @@ from app.database import get_db
 from app.evidence.service import list_items as list_evidence
 from app.schematization.service import get_or_create as get_schematization
 from app.shoebox.service import list_items as list_shoebox
+from app.story.service import get_or_create as get_story
 from app.workspaces.service import (
     create_workspace,
     delete_workspace,
@@ -92,20 +93,25 @@ class WorkspacePollResponse(BaseModel):
     shoebox: list[PollShoeboxItem]
     evidence: list[PollEvidenceItem]
     schematization: PollSchematization
+    story: str
     ai_search_running: bool
     ai_extract_running: bool
     ai_build_case_running: bool
+    ai_story_running: bool
 
 
 @router.get("/{ws_id}/poll", response_model=WorkspacePollResponse)
 def poll(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> WorkspacePollResponse:
     check_and_trigger(db, ws_id)
     status = running_pipelines(ws_id)
+    story_row = get_story(db, ws_id)
     return WorkspacePollResponse(
         shoebox=[PollShoeboxItem.model_validate(i) for i in list_shoebox(db, ws_id)],
         evidence=[PollEvidenceItem.model_validate(i) for i in list_evidence(db, ws_id)],
         schematization=PollSchematization.model_validate(get_schematization(db, ws_id)),
+        story=story_row.content,
         ai_search_running=status["search"],
         ai_extract_running=status["extract"],
         ai_build_case_running=status["build_case"],
+        ai_story_running=status["story"],
     )

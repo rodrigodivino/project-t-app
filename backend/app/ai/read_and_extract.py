@@ -1,10 +1,9 @@
-import json
 import logging
 import uuid
 from typing import Callable
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.ai import get_llm
@@ -17,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 GLOSSARY = """\
 Glossário do framework de sensemaking:
+
+Construtos:
 - Fonte de dados externa: repositório de dados sob análise.
 - Shoebox: subconjunto da fonte relevante para a análise atual. \
 Cada item contém uma consulta SQL, uma explicação e uma tabela de \
@@ -26,19 +27,39 @@ interpretação ou inferência. Snippets são os blocos de construção \
 das evidências.
 - Arquivo de evidências: conjunto de snippets extraídos do shoebox.
 - Frame: perspectiva, hipótese ou enquadramento criado pelo analista. \
-Frames são exclusivamente humanos.
+Frames são exclusivamente humanos. A IA não pode criar, modificar \
+ou excluir frames.
 - Esquematização: representação externa do entendimento do analista, \
-organizada como árvore de frames e evidências com relações entre eles.
-- Relações entre evidência e nó pai:
-  - elaborate: a evidência apoia ou detalha o nó
-  - question: a evidência questiona ou desafia o nó
-  - cancel: a evidência invalida o nó
-- História: articulação textual da esquematização para comunicação."""
+organizada como árvore. Os nós da árvore são frames ou evidências. \
+Cada nó filho se conecta ao pai por uma relação (elaborate, question \
+ou cancel). Tanto frames quanto evidências podem ter filhos, formando \
+uma hierarquia recursiva.
+- Relações entre nó filho e nó pai:
+  - elaborate: o filho apoia ou detalha o pai
+  - question: o filho questiona ou desafia o pai
+  - cancel: o filho invalida o pai
+- Sugestão: posicionamento de evidência na esquematização proposto \
+pela IA, que aguarda aprovação humana. Até ser aprovada, a sugestão \
+não faz parte efetiva da esquematização.
+- História: articulação textual da esquematização para comunicação.
+
+Passos da IA no ciclo de sensemaking:
+1. Search and Filter: gera consultas contra a fonte de dados externa \
+para encontrar dados relevantes, depositando resultados no shoebox.
+2. Read and Extract: lê itens do shoebox e extrai snippets factuais \
+para o arquivo de evidências.
+3. Build Case and Schematize: examina evidências não posicionadas e \
+sugere onde colocá-las na esquematização, indicando a relação com o \
+nó pai.
+4. Tell a Story: articula a esquematização como documento em \
+linguagem natural.
+Os quatro passos reagem a mudanças na esquematização, formando \
+uma cadeia contínua."""
 
 SYSTEM_PROMPT = f"""\
 {GLOSSARY}
 
-Você opera no passo "Read and Extract". Seu papel: ler os itens do \
+Você opera no passo 2, "Read and Extract". Seu papel: ler os itens do \
 shoebox e extrair snippets factuais que possam servir como evidências \
 para elaborar, questionar ou cancelar nós da esquematização atual.
 
@@ -57,7 +78,7 @@ a análise.
 - Cada snippet deve ser uma observação factual e objetiva dos dados, \
 não uma interpretação ou inferência.
 - Cada snippet deve indicar de qual item do shoebox veio (campo \
-"shoebox_id" com o ID entre colchetes) e referenciar as linhas \
+"shoebox_id" com o UUID do item, sem colchetes) e referenciar as linhas \
 específicas do resultado daquele item que fundamentam a observação \
 (campo "rows" com índices base-0).
 - As linhas selecionadas devem ser essenciais para o snippet, não \
@@ -81,7 +102,8 @@ sem apostos explicativos, sem enumerações de valores. Se a frase \
 precisa de uma vírgula além de conectivos simples, ela é longa demais.
 
 Estratégia de equilíbrio:
-- Examine a linha "Cobertura" de cada frame. Quando um nó tem várias \
+- Examine os atributos elaborations, questions e cancellations de \
+cada nó na esquematização XML. Quando um nó tem várias \
 elaborações e nenhum questionamento ou cancelamento, priorize a \
 extração de fatos que possam questionar ou cancelar esse nó.
 - Quando uma relação cancel já existe em um nó, procure fatos que \
@@ -104,6 +126,12 @@ class Snippet(BaseModel):
     content: str
     rows: list[int]
 
+    @model_validator(mode="after")
+    def strip_whitespace(self):
+        self.shoebox_id = self.shoebox_id.strip()
+        self.content = self.content.strip()
+        return self
+
 
 class ExtractionResult(BaseModel):
     snippets: list[Snippet] = Field(default_factory=list)
@@ -111,58 +139,41 @@ class ExtractionResult(BaseModel):
 
 def build_prompt(
     schematization_context: str,
-    evidence_titles: list[str],
-    shoebox_items: list[dict],
+    evidence_xml: str,
+    shoebox_xml: str,
 ) -> str:
     parts = [
         "Estado atual da esquematização:\n\n",
         schematization_context,
         "\n\n",
-    ]
-    if evidence_titles:
-        parts.append(
-            "Snippets já existentes nos arquivos de evidência (evite duplicar):\n\n"
-        )
-        for i, title in enumerate(evidence_titles, 1):
-            parts.append(f"  {i}. {title}\n")
-        parts.append("\n")
-    else:
-        parts.append("Os arquivos de evidência estão vazios.\n\n")
-
-    parts.append("Itens do shoebox para leitura e extração:\n\n")
-    for item in shoebox_items:
-        parts.append(f"--- Item [{item['id']}] ---\n")
-        parts.append(f"Consulta: {item['query']}\n")
-        parts.append(f"Explicação: {item['explanation']}\n")
-        result = item["result"]
-        parts.append(f"Resultado ({len(result)} linhas, índice base-0):\n")
-        indexed = [{"_index": i, **row} for i, row in enumerate(result)]
-        parts.append(json.dumps(indexed, indent=2, default=str))
-        parts.append("\n\n")
-
-    parts.append(
+        "Snippets já existentes nos arquivos de evidência (evite duplicar):\n\n",
+        evidence_xml,
+        "\n\n",
+        "Itens do shoebox para leitura e extração:\n\n",
+        shoebox_xml,
+        "\n\n",
         "Extraia de 0 a 5 snippets factuais que elaborem, questionem ou "
         "cancelem nós da esquematização. Para cada snippet, indique o "
         "shoebox_id do item de onde ele veio e quais linhas do resultado "
         "daquele item fundamentam a observação (índices base-0). "
         "Na dúvida, produza 1. Priorize equilíbrio entre relações e "
-        "cobertura dos nós no topo da árvore."
-    )
+        "cobertura dos nós no topo da árvore.",
+    ]
     return "".join(parts)
 
 
 def build_messages(
     schematization_context: str,
-    evidence_titles: list[str],
-    shoebox_items: list[dict],
+    evidence_xml: str,
+    shoebox_xml: str,
 ) -> list:
     return [
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(
             content=build_prompt(
                 schematization_context,
-                evidence_titles,
-                shoebox_items,
+                evidence_xml,
+                shoebox_xml,
             )
         ),
     ]
@@ -188,15 +199,6 @@ def _default_evidence_loader(db: Session, workspace_id: uuid.UUID) -> list:
     return evidence_service.list_items(db, workspace_id)
 
 
-def _item_to_dict(item) -> dict:
-    return {
-        "id": str(item.id),
-        "query": item.query,
-        "explanation": item.explanation,
-        "result": item.result,
-    }
-
-
 def run(
     workspace_id: uuid.UUID,
     llm_caller: Callable[[list], ExtractionResult] = call_llm,
@@ -210,24 +212,24 @@ def run(
         schema_data = schema_loader(db, workspace_id)
         from app.schematization.service import (
             _normalize_data,
-            serialize_for_llm,
+            serialize_xml,
         )
 
         tree = _normalize_data(schema_data)
 
         evidence_items = evidence_loader(db, workspace_id)
         evidence_map = {str(item.id): item.content for item in evidence_items}
-        evidence_titles = [item.content for item in evidence_items]
-        schema_context = serialize_for_llm(tree, evidence_map)
+        schema_context = serialize_xml(tree, evidence_map)
+        evidence_xml = evidence_service.serialize_xml(evidence_items)
 
         items = shoebox_loader(db, workspace_id)
         if not items:
             return
 
         item_map = {str(item.id): item for item in items}
-        shoebox_dicts = [_item_to_dict(item) for item in items]
+        shoebox_xml = shoebox_service.serialize_xml(items)
 
-        messages = build_messages(schema_context, evidence_titles, shoebox_dicts)
+        messages = build_messages(schema_context, evidence_xml, shoebox_xml)
         result = llm_caller(messages)
 
         for snippet in result.snippets:

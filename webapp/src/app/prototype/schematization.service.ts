@@ -11,6 +11,7 @@ export interface SchemaEvidenceNode {
   id: string;
   rel?: RelType;
   suggestion?: boolean;
+  description?: string;
   children?: SchemaNode[];
 }
 
@@ -135,6 +136,19 @@ export class SchematizationService {
     );
   }
 
+  updateNode(
+    workspaceId: string,
+    nodeId: string,
+    description?: string,
+  ): Observable<SchematizationResponse> {
+    const body: Record<string, unknown> = {};
+    if (description !== undefined) body['description'] = description;
+    return this.http.patch<SchematizationResponse>(
+      `/api/workspaces/${workspaceId}/schematization/nodes/${nodeId}`,
+      body
+    );
+  }
+
   approveSuggestion(
     workspaceId: string,
     nodeId: string,
@@ -166,6 +180,13 @@ export class SchematizationService {
     );
   }
 
+  triggerAiStory(workspaceId: string): Observable<void> {
+    return this.http.post<void>(
+      `/api/workspaces/${workspaceId}/schematization/ai-story`,
+      {}
+    );
+  }
+
   poll(workspaceId: string): Observable<WorkspacePollResponse> {
     return this.http.get<WorkspacePollResponse>(
       `/api/workspaces/${workspaceId}/poll`
@@ -177,7 +198,9 @@ export interface WorkspacePollResponse {
   shoebox: ShoeboxItemSummary[];
   evidence: EvidenceItemSummary[];
   schematization: SchematizationResponse;
+  story: string;
   ai_search_running: boolean;
   ai_extract_running: boolean;
   ai_build_case_running: boolean;
+  ai_story_running: boolean;
 }
