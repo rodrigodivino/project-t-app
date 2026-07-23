@@ -1,5 +1,4 @@
 import logging
-import threading
 import uuid
 from typing import Callable
 
@@ -29,7 +28,8 @@ relevantes e determinantes para a análise merecem lugar.
 - Cada sugestão liga uma evidência a um nó existente (frame ou \
 evidência) com uma relação (elaborate, question ou cancel).
 - A evidência só pode ser colocada como filha de um frame ou de \
-outra evidência. Nunca sugira colocação na raiz.
+outra evidência já confirmada. Nunca sugira colocação na raiz \
+e nunca use um nó marcado como [SUGESTÃO] como pai.
 - Seja conservador. Só sugira posicionamento se a relação for clara \
 e direta. Evidências sem relação clara ficam de fora.
 - Prefira o nó mais específico. Se a evidência se relaciona com \
@@ -54,7 +54,15 @@ testem se essa invalidação se sustenta.
 - Priorize frames no topo da árvore com menos filhos em vez de nós \
 profundos que já possuem cobertura.
 - O objetivo é amplitude pela árvore e equilíbrio entre relações, \
-não profundidade em um único nó."""
+não profundidade em um único nó.
+
+Formato de saída:
+- "suggestions": lista de objetos, cada um com:
+  - "evidence_id": string com o ID (entre colchetes) da evidência \
+candidata.
+  - "node_id": string com o ID do nó pai (frame ou evidência) na \
+esquematização.
+  - "rel": string, uma de "elaborate", "question" ou "cancel"."""
 
 
 class Suggestion(BaseModel):
@@ -80,6 +88,9 @@ REL_LABELS_PT = {
 }
 
 
+MAX_SUGGESTIONS = 5
+
+
 def _all_tree_evidence_ids(tree: list) -> list[str]:
     ids: list[str] = []
     for node in tree:
@@ -88,6 +99,16 @@ def _all_tree_evidence_ids(tree: list) -> list[str]:
         for child in node.get("children", []):
             ids.extend(_all_tree_evidence_ids([child]))
     return ids
+
+
+def _count_suggestions(tree: list) -> int:
+    total = 0
+    for node in tree:
+        if node.get("type") == "evidence" and node.get("suggestion"):
+            total += 1
+        for child in node.get("children", []):
+            total += _count_suggestions([child])
+    return total
 
 
 
@@ -191,7 +212,12 @@ def call_llm(
         BuildCaseSuggestions, method="json_schema",
     )
     messages = build_messages(schema_context, candidate_evidence)
+    logger.warning(
+        "build_case LLM INPUT:\n%s",
+        "\n---\n".join(m.content for m in messages),
+    )
     result = structured.invoke(messages)
+    logger.warning("build_case LLM OUTPUT:\n%s", result)
     return result  # type: ignore[return-value]
 
 
@@ -204,20 +230,14 @@ def _default_evidence_loader(db: Session, workspace_id: uuid.UUID) -> list:
     return evidence_service.list_items(db, workspace_id)
 
 
-def _default_evidence_getter(db: Session, item_id: uuid.UUID):
-    return evidence_service.get_item(db, item_id)
-
-
 def run(
     workspace_id: uuid.UUID,
-    evidence_ids: list[uuid.UUID] | None = None,
     llm_caller: Callable[
         [str, list[tuple[str, str]]], BuildCaseSuggestions
     ] = call_llm,
     session_factory: Callable[[], Session] = SessionLocal,
     schema_loader: Callable = _default_schema_loader,
     evidence_loader: Callable = _default_evidence_loader,
-    evidence_getter: Callable = _default_evidence_getter,
 ) -> None:
     db: Session = session_factory()
     try:
@@ -232,34 +252,38 @@ def run(
             for n in tree
         )
         if not has_nodes:
+            logger.warning("build_case: no frames/evidence in tree, skipping")
             return
 
         placed_ids = set(_all_tree_evidence_ids(tree))
+        items = evidence_loader(db, workspace_id)
 
-        if evidence_ids is not None:
-            items = [evidence_getter(db, eid) for eid in evidence_ids]
-            items = [i for i in items if i is not None]
-        else:
-            items = evidence_loader(db, workspace_id)
+        existing_count = _count_suggestions(tree)
+        if existing_count >= MAX_SUGGESTIONS:
+            logger.warning("build_case: %d suggestions already exist (max %d), skipping", existing_count, MAX_SUGGESTIONS)
+            return
+        slots = MAX_SUGGESTIONS - existing_count
 
         candidates = [
             item for item in items if str(item.id) not in placed_ids
         ]
         if not candidates:
+            logger.warning("build_case: no unplaced candidates, skipping")
             return
 
-        all_evidence = evidence_loader(db, workspace_id)
-        evidence_map = {str(item.id): item.content for item in all_evidence}
+        evidence_map = {str(item.id): item.content for item in items}
         schema_context = serialize_schema_with_ids(tree, evidence_map)
 
         candidate_list = [
             (str(item.id), item.content) for item in candidates
         ]
         result = llm_caller(schema_context, candidate_list)
-
         candidate_id_set = {str(item.id) for item in candidates}
+        added = 0
 
         for suggestion in result.suggestions:
+            if added >= slots:
+                break
             if suggestion.rel not in ("elaborate", "question", "cancel"):
                 continue
             if suggestion.evidence_id not in candidate_id_set:
@@ -273,6 +297,7 @@ def run(
                     rel=suggestion.rel,
                     suggestion=True,
                 )
+                added += 1
             except (ValueError, Exception):
                 logger.exception(
                     "failed to add suggestion for evidence %s",
@@ -285,15 +310,3 @@ def run(
         )
     finally:
         db.close()
-
-
-def fire(
-    workspace_id: uuid.UUID,
-    evidence_ids: list[uuid.UUID] | None = None,
-) -> None:
-    thread = threading.Thread(
-        target=run,
-        args=(workspace_id, evidence_ids),
-        daemon=True,
-    )
-    thread.start()

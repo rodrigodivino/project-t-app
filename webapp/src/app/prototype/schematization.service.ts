@@ -177,4 +177,7 @@ export interface WorkspacePollResponse {
   shoebox: ShoeboxItemSummary[];
   evidence: EvidenceItemSummary[];
   schematization: SchematizationResponse;
+  ai_search_running: boolean;
+  ai_extract_running: boolean;
+  ai_build_case_running: boolean;
 }

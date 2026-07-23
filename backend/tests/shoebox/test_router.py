@@ -12,6 +12,7 @@ def _make_item(**overrides):
         "query": "SELECT * FROM post_rede_social_himark",
         "explanation": "test",
         "result": [{"time": "2020-04-06"}],
+        "chart_spec": None,
         "ai_authored": False,
         "added_at": datetime.now(timezone.utc),
     }
@@ -33,9 +34,10 @@ def test_list_shoebox(mock_db, mock_list, client):
     assert len(response.json()) == 2
 
 
+@patch("app.shoebox.router.force_extract")
 @patch("app.shoebox.router.add_item")
 @patch("app.shoebox.router.get_db")
-def test_add_to_shoebox(mock_db, mock_add, client):
+def test_add_to_shoebox(mock_db, mock_add, mock_extract, client):
     ws_id = uuid.uuid4()
     item = _make_item(workspace_id=ws_id)
     mock_add.return_value = item

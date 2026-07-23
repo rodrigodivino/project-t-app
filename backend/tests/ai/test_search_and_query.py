@@ -1,4 +1,3 @@
-import time
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -8,7 +7,6 @@ from app.ai.search_and_query import (
     SearchQuery,
     _clean_rows,
     build_prompt,
-    fire,
     run,
 )
 
@@ -227,17 +225,3 @@ def test_prompt_includes_balance_annotation():
     assert "Cobertura:" in prompt
     assert "2× elabora" in prompt
     assert "0× questiona" in prompt
-
-
-def test_fire_returns_immediately():
-    session = FakeSession()
-    ws_id = uuid.uuid4()
-
-    def slow_llm(data: dict, existing: list[dict]) -> SearchQueries:
-        time.sleep(0.5)
-        return fake_llm(data, existing)
-
-    start = time.monotonic()
-    fire(ws_id, SAMPLE_SCHEMA_TREE)
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.2

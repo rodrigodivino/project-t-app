@@ -1,4 +1,3 @@
-import time
 import uuid
 
 from app.ai.build_case import (
@@ -7,7 +6,6 @@ from app.ai.build_case import (
     _all_tree_evidence_ids,
     build_messages,
     build_prompt,
-    fire,
     run,
     serialize_schema_with_ids,
 )
@@ -163,8 +161,7 @@ def test_run_creates_suggestion_nodes():
             session_factory=lambda: session,
             schema_loader=lambda db, ws: schema_data,
             evidence_loader=lambda db, ws: [ev],
-            evidence_getter=lambda db, eid: ev if eid == ev.id else None,
-        )
+            )
     finally:
         svc.add_evidence = original_add_evidence
 
@@ -200,7 +197,6 @@ def test_run_skips_evidence_already_in_tree():
         session_factory=lambda: session,
         schema_loader=lambda db, ws: schema_data,
         evidence_loader=lambda db, ws: [ev],
-        evidence_getter=lambda db, eid: ev,
     )
     assert not called["llm"]
     assert session.closed
@@ -229,7 +225,6 @@ def test_run_skips_evidence_already_suggested():
         session_factory=lambda: session,
         schema_loader=lambda db, ws: schema_data,
         evidence_loader=lambda db, ws: [ev],
-        evidence_getter=lambda db, eid: ev,
     )
     assert not called["llm"]
     assert session.closed
@@ -259,7 +254,6 @@ def test_run_handles_zero_suggestions():
             session_factory=lambda: session,
             schema_loader=lambda db, ws: schema_data,
             evidence_loader=lambda db, ws: [ev],
-            evidence_getter=lambda db, eid: ev,
         )
     finally:
         svc.add_evidence = original
@@ -292,7 +286,6 @@ def test_run_handles_invalid_node_id():
         session_factory=lambda: session,
         schema_loader=lambda db, ws: schema_data,
         evidence_loader=lambda db, ws: [ev],
-        evidence_getter=lambda db, eid: ev,
     )
     assert session.closed
 
@@ -311,13 +304,12 @@ def test_run_skips_empty_tree():
         session_factory=lambda: session,
         schema_loader=lambda db, ws: EMPTY_SCHEMA_TREE,
         evidence_loader=lambda db, ws: [],
-        evidence_getter=lambda db, eid: None,
     )
     assert not called["llm"]
     assert session.closed
 
 
-def test_run_processes_specific_ids():
+def test_run_processes_all_unplaced_evidence():
     session = FakeSession()
     ws_id = uuid.uuid4()
     ev_a = FakeEvidenceItem(content="A")
@@ -332,29 +324,12 @@ def test_run_processes_specific_ids():
         received["candidates"] = candidates
         return BuildCaseSuggestions(suggestions=[])
 
-    def getter(db, eid):
-        if eid == ev_a.id:
-            return ev_a
-        if eid == ev_b.id:
-            return ev_b
-        return None
-
     run(
         ws_id,
-        evidence_ids=[ev_a.id],
         llm_caller=capturing_llm,
         session_factory=lambda: session,
         schema_loader=lambda db, ws: schema_data,
         evidence_loader=lambda db, ws: [ev_a, ev_b],
-        evidence_getter=getter,
     )
-    assert len(received["candidates"]) == 1
-    assert received["candidates"][0][1] == "A"
+    assert len(received["candidates"]) == 2
     assert session.closed
-
-
-def test_fire_returns_immediately():
-    start = time.monotonic()
-    fire(uuid.uuid4())
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.2

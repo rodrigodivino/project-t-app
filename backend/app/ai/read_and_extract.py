@@ -1,6 +1,5 @@
 import json
 import logging
-import threading
 import uuid
 from typing import Callable
 
@@ -12,7 +11,6 @@ from app.ai import get_llm
 from app.database import SessionLocal
 from app.evidence import service as evidence_service
 from app.schematization import service as schematization_service
-from app.settings import ANTHROPIC_API_KEY
 from app.shoebox import service as shoebox_service
 
 logger = logging.getLogger(__name__)
@@ -40,7 +38,7 @@ organizada como árvore de frames e evidências com relações entre eles.
 SYSTEM_PROMPT = f"""\
 {GLOSSARY}
 
-Você opera no passo "Read and Extract". Seu papel: ler um item do \
+Você opera no passo "Read and Extract". Seu papel: ler os itens do \
 shoebox e extrair snippets factuais que possam servir como evidências \
 para elaborar, questionar ou cancelar nós da esquematização atual.
 
@@ -51,14 +49,17 @@ quanto um que o apoia. Os snippets são auto-contidos e não mencionam \
 a esquematização nem os frames em seu texto.
 
 Regras:
-- Produza de 0 a 5 snippets para o item do shoebox fornecido. \
-Na dúvida, produza 1. Produza 0 quando os dados já estiverem \
-cobertos pelas evidências existentes. Produza mais de 1 somente \
-quando múltiplas observações forem cruciais para a análise.
+- Produza de 0 a 5 snippets no total, considerando todos os itens \
+do shoebox fornecidos. Na dúvida, produza 1. Produza 0 quando os \
+dados já estiverem cobertos pelas evidências existentes. Produza \
+mais de 1 somente quando múltiplas observações forem cruciais para \
+a análise.
 - Cada snippet deve ser uma observação factual e objetiva dos dados, \
 não uma interpretação ou inferência.
-- Cada snippet deve referenciar as linhas específicas do resultado \
-que fundamentam a observação (campo "rows" com índices base-0).
+- Cada snippet deve indicar de qual item do shoebox veio (campo \
+"shoebox_id" com o ID entre colchetes) e referenciar as linhas \
+específicas do resultado daquele item que fundamentam a observação \
+(campo "rows" com índices base-0).
 - As linhas selecionadas devem ser essenciais para o snippet, não \
 menções incidentais. Selecione linhas que exibem o padrão descrito: \
 os maiores valores, os outliers, os que crescem ou declinam, os que \
@@ -69,6 +70,10 @@ elas existem nos resultados. A seleção deve permitir ao leitor \
 verificar a afirmação do snippet olhando somente as linhas indicadas.
 - Não produza snippets que dupliquem ou sobreponham substancialmente \
 as evidências já existentes nos arquivos de evidência.
+- Mensagens com prefixo "re: " são repostagens de uma mensagem \
+original. Quando várias linhas contêm o mesmo texto com "re: ", \
+descreva como difusão ou repostagem, não como múltiplas pessoas \
+dizendo a mesma coisa independentemente.
 - O campo "content" DEVE ser escrito em português brasileiro (pt-BR) \
 com acentuação correta. Cada snippet é UMA ÚNICA frase curta (máximo \
 20 palavras) que afirma um fato observável nos dados. Sem parênteses, \
@@ -82,10 +87,20 @@ extração de fatos que possam questionar ou cancelar esse nó.
 - Quando uma relação cancel já existe em um nó, procure fatos que \
 testem se essa invalidação se sustenta.
 - Priorize snippets relevantes para frames no topo da árvore com \
-menos filhos."""
+menos filhos.
+
+Formato de saída:
+- "snippets": lista de objetos, cada um com:
+  - "shoebox_id": string com o ID do item do shoebox de onde o \
+snippet foi extraído.
+  - "content": string em pt-BR, uma única frase curta (máx 20 \
+palavras) afirmando um fato observável nos dados.
+  - "rows": lista de inteiros (índices base-0) das linhas do \
+resultado daquele item do shoebox que fundamentam a observação."""
 
 
 class Snippet(BaseModel):
+    shoebox_id: str
     content: str
     rows: list[int]
 
@@ -97,7 +112,7 @@ class ExtractionResult(BaseModel):
 def build_prompt(
     schematization_context: str,
     evidence_titles: list[str],
-    shoebox_item: dict,
+    shoebox_items: list[dict],
 ) -> str:
     parts = [
         "Estado atual da esquematização:\n\n",
@@ -114,18 +129,22 @@ def build_prompt(
     else:
         parts.append("Os arquivos de evidência estão vazios.\n\n")
 
-    parts.append("Item do shoebox para leitura e extração:\n\n")
-    parts.append(f"Consulta: {shoebox_item['query']}\n")
-    parts.append(f"Explicação: {shoebox_item['explanation']}\n")
-    result = shoebox_item["result"]
-    parts.append(f"Resultado ({len(result)} linhas, índice base-0):\n")
-    indexed = [{"_index": i, **row} for i, row in enumerate(result)]
-    parts.append(json.dumps(indexed, indent=2, default=str))
-    parts.append("\n\n")
+    parts.append("Itens do shoebox para leitura e extração:\n\n")
+    for item in shoebox_items:
+        parts.append(f"--- Item [{item['id']}] ---\n")
+        parts.append(f"Consulta: {item['query']}\n")
+        parts.append(f"Explicação: {item['explanation']}\n")
+        result = item["result"]
+        parts.append(f"Resultado ({len(result)} linhas, índice base-0):\n")
+        indexed = [{"_index": i, **row} for i, row in enumerate(result)]
+        parts.append(json.dumps(indexed, indent=2, default=str))
+        parts.append("\n\n")
+
     parts.append(
         "Extraia de 0 a 5 snippets factuais que elaborem, questionem ou "
-        "cancelem nós da esquematização. Para cada snippet, indique quais "
-        "linhas do resultado fundamentam a observação (índices base-0). "
+        "cancelem nós da esquematização. Para cada snippet, indique o "
+        "shoebox_id do item de onde ele veio e quais linhas do resultado "
+        "daquele item fundamentam a observação (índices base-0). "
         "Na dúvida, produza 1. Priorize equilíbrio entre relações e "
         "cobertura dos nós no topo da árvore."
     )
@@ -135,7 +154,7 @@ def build_prompt(
 def build_messages(
     schematization_context: str,
     evidence_titles: list[str],
-    shoebox_item: dict,
+    shoebox_items: list[dict],
 ) -> list:
     return [
         SystemMessage(content=SYSTEM_PROMPT),
@@ -143,17 +162,17 @@ def build_messages(
             content=build_prompt(
                 schematization_context,
                 evidence_titles,
-                shoebox_item,
+                shoebox_items,
             )
         ),
     ]
 
 
-def call_llm_batch(inputs: list[list]) -> list[ExtractionResult]:
+def call_llm(messages: list) -> ExtractionResult:
     structured = get_llm(timeout=60).with_structured_output(
         ExtractionResult, method="json_schema",
     )
-    return structured.batch(inputs)
+    return structured.invoke(messages)
 
 
 def _default_schema_loader(db: Session, workspace_id: uuid.UUID) -> list:
@@ -165,16 +184,13 @@ def _default_shoebox_loader(db: Session, workspace_id: uuid.UUID) -> list:
     return shoebox_service.list_items(db, workspace_id)
 
 
-def _default_shoebox_getter(db: Session, item_id: uuid.UUID):
-    return shoebox_service.get_item(db, item_id)
-
-
 def _default_evidence_loader(db: Session, workspace_id: uuid.UUID) -> list:
     return evidence_service.list_items(db, workspace_id)
 
 
 def _item_to_dict(item) -> dict:
     return {
+        "id": str(item.id),
         "query": item.query,
         "explanation": item.explanation,
         "result": item.result,
@@ -183,12 +199,10 @@ def _item_to_dict(item) -> dict:
 
 def run(
     workspace_id: uuid.UUID,
-    shoebox_ids: list[uuid.UUID] | None = None,
-    llm_caller: Callable[[list[list]], list[ExtractionResult]] = call_llm_batch,
+    llm_caller: Callable[[list], ExtractionResult] = call_llm,
     session_factory: Callable[[], Session] = SessionLocal,
     schema_loader: Callable = _default_schema_loader,
     shoebox_loader: Callable = _default_shoebox_loader,
-    shoebox_getter: Callable = _default_shoebox_getter,
     evidence_loader: Callable = _default_evidence_loader,
 ) -> None:
     db: Session = session_factory()
@@ -206,55 +220,39 @@ def run(
         evidence_titles = [item.content for item in evidence_items]
         schema_context = serialize_for_llm(tree, evidence_map)
 
-        if shoebox_ids is not None:
-            items = [shoebox_getter(db, sid) for sid in shoebox_ids]
-            items = [i for i in items if i is not None]
-        else:
-            items = shoebox_loader(db, workspace_id)
-
+        items = shoebox_loader(db, workspace_id)
         if not items:
-also, why            return
+            return
 
-        inputs = [
-            build_messages(schema_context, evidence_titles, _item_to_dict(item))
-            for item in items
-        ]
+        item_map = {str(item.id): item for item in items}
+        shoebox_dicts = [_item_to_dict(item) for item in items]
 
-        results = llm_caller(inputs)
+        messages = build_messages(schema_context, evidence_titles, shoebox_dicts)
+        result = llm_caller(messages)
 
-        new_evidence_ids: list[uuid.UUID] = []
-        for item, extraction in zip(items, results):
-            for snippet in extraction.snippets:
-                try:
-                    ev = evidence_service.add_item(
-                        db,
-                        workspace_id,
-                        item.id,
-                        snippet.content,
-                        snippet.rows,
-                        ai_authored=True,
-                    )
-                    new_evidence_ids.append(ev.id)
-                except Exception:
-                    logger.exception("failed to add snippet for shoebox %s", item.id)
-                    db.rollback()
-        if new_evidence_ids and ANTHROPIC_API_KEY:
-            from app.ai import build_case
-
-            build_case.fire(workspace_id, evidence_ids=new_evidence_ids)
+        for snippet in result.snippets:
+            source_item = item_map.get(snippet.shoebox_id)
+            if source_item is None:
+                logger.warning(
+                    "snippet references unknown shoebox_id %s",
+                    snippet.shoebox_id,
+                )
+                continue
+            try:
+                evidence_service.add_item(
+                    db,
+                    workspace_id,
+                    source_item.id,
+                    snippet.content,
+                    snippet.rows,
+                    ai_authored=True,
+                )
+            except Exception:
+                logger.exception(
+                    "failed to add snippet for shoebox %s", source_item.id,
+                )
+                db.rollback()
     except Exception:
         logger.exception("read_and_extract failed for workspace %s", workspace_id)
     finally:
         db.close()
-
-
-def fire(
-    workspace_id: uuid.UUID,
-    shoebox_ids: list[uuid.UUID] | None = None,
-) -> None:
-    thread = threading.Thread(
-        target=run,
-        args=(workspace_id, shoebox_ids),
-        daemon=True,
-    )
-    thread.start()

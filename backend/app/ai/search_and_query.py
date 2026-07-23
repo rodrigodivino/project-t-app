@@ -1,6 +1,5 @@
 import json
 import logging
-import threading
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -16,7 +15,6 @@ from app.settings import ANTHROPIC_API_KEY
 from app.evidence import service as evidence_service
 from app.shoebox import service as shoebox_service
 from app.sources import service as sources_service
-from app.ai import read_and_extract
 from app.ai.read_and_extract import GLOSSARY
 
 logger = logging.getLogger(__name__)
@@ -54,6 +52,10 @@ Características importantes dos dados:
 - As mensagens são escritas em inglês.
 - As postagens podem conter conteúdo não confiável, automatizado ou \
 gerado por bots.
+- Mensagens com prefixo "re: " são repostagens (compartilhamentos) \
+de uma mensagem original. A mensagem original aparece sem o prefixo. \
+Quando várias contas publicam o mesmo texto com "re: ", trata-se de \
+difusão viral, não de postagens independentes.
 
 Regras:
 - Produza de 0 a 5 consultas SQL SELECT. Na dúvida, produza 1. \
@@ -74,18 +76,18 @@ time) quando a evolução temporal varia por bairro). A métrica pode \
 ser expressa como percentual (ex: COUNT(*)::float / SUM(COUNT(*)) \
 OVER () * 100 AS pct) quando proporções relativas são mais \
 informativas do que valores absolutos.
-- Quando a consulta agrupa timestamps (date_trunc, extract ou qualquer \
-transformação que colapsa vários instantes em um bucket), formate o \
-bucket como rótulo legível no SELECT e ordene pela expressão temporal \
-original. Exemplos: \
-to_char(date_trunc('day', time), 'Dia DD') AS dia com \
-ORDER BY date_trunc('day', time); \
+- Quando a consulta agrupa timestamps com date_trunc, mantenha o \
+resultado como timestamp no SELECT e ordene por ele. Exemplo: \
+date_trunc('hour', time) AS hora com ORDER BY 1. Não aplique \
+to_char nem cast para TEXT sobre date_trunc. \
+Quando usar extract (hour, dow), concatene uma unidade legível: \
 extract(hour FROM time)::int || 'h' AS hora com \
-ORDER BY extract(hour FROM time). \
-A coluna alias deve ser TEXT, nunca timestamp. O ORDER BY garante \
-que as linhas chegam ordenadas no tempo. Nunca use o resultado bruto \
-de date_trunc como coluna final. Sempre use HH24 (formato 24 horas) \
-em to_char, nunca HH ou HH12.
+ORDER BY extract(hour FROM time).
+- Toda expressão não-agregada no SELECT deve aparecer no GROUP BY \
+(ou ser derivada dele). Correto: GROUP BY date_trunc('day', time) \
+com date_trunc('day', time) AS dia no SELECT. Incorreto: \
+GROUP BY date_trunc('day', time) com extract(day FROM time) \
+no SELECT.
 - Nunca aplique LIMIT a consultas com GROUP BY. O número de linhas \
 é determinado pelo número de grupos, não por um teto arbitrário. \
 Use LIMIT somente em consultas que listam linhas individuais \
@@ -115,7 +117,14 @@ questionada.
 - Priorize frames no topo da árvore com menos filhos em vez de nós \
 profundos que já possuem cobertura.
 - O objetivo é amplitude pela árvore e equilíbrio entre relações, \
-não profundidade em um único nó."""
+não profundidade em um único nó.
+
+Formato de saída:
+- "queries": lista de objetos, cada um com:
+  - "sql": string com a consulta SQL SELECT. Em inglês.
+  - "explanation": string em pt-BR, formato "X, para Y" (máx 25 \
+palavras). X descreve o conteúdo dos resultados, Y é a relevância \
+para a análise."""
 
 
 class SearchQuery(BaseModel):
@@ -181,8 +190,8 @@ resultados. Produza uma especificação Vega-Lite v5 que visualize \
 esses dados de forma clara.
 
 Tipos de coluna (decida pelo valor na amostra, não pelo SQL):
-- Datetime: valores TIMESTAMP como "2020-04-06T12:34:00". \
-Use type "temporal".
+- Datetime: valores ISO como "2020-04-06T12:00:00" (incluindo \
+timestamps arredondados por date_trunc). Use type "temporal".
 - Quantitativo: métricas numéricas (count, total, avg, pct). \
 Use type "quantitative".
 - Texto longo (message): não é visualizável. Ignore.
@@ -200,18 +209,17 @@ Como escolher o mark:
 Dimensão no eixo y (sort: "-x"), métrica no eixo x.
 - 1 temporal + 1 métrica: line. Temporal no eixo x, \
 métrica no eixo y.
-- 2 numéricas sem dimensão categórica: point (dispersão). \
-Uma em x, outra em y.
-- 2 dimensões + 1 métrica: rect (heatmap). Uma dimensão em x, \
-outra em y, métrica no encoding de color com scale contínua.
-- O mark line só é válido quando o eixo x é temporal. \
-Rótulos de bucket no eixo x recebem bar, nunca line.
+- 1 temporal + 1 categórica + 1 métrica: line com color. \
+Temporal no eixo x, métrica no eixo y, categórica no encoding \
+color (type nominal).
+- 2 numéricas sem dimensão categórica: point (dispersão).
+- 2 dimensões não-temporais + 1 métrica: rect (heatmap).
 - Não use nenhum outro tipo de mark.
 
 Regras:
-- Retorne SOMENTE o objeto de especificação Vega-Lite (mark + encoding). \
-Não inclua o campo "data" nem "$schema", pois os dados serão injetados \
-pelo frontend.
+- Retorne a especificação Vega-Lite (mark + encoding) como uma string \
+JSON. Não inclua o campo "data" nem "$schema", pois os dados serão \
+injetados pelo frontend.
 - Use nomes de campo exatamente como aparecem nas colunas dos resultados.
 - Inclua "title" curto em português brasileiro.
 - Não defina encoding de opacity. Use color livremente quando \
@@ -226,6 +234,13 @@ composições (concat/facet), sem seleções interativas, sem params.
 - Se os resultados contêm apenas 1 linha ou são puramente textuais \
 (ex: mensagens sem agregação), retorne spec como null.
 
+Formato de saída:
+- "explanation": raciocínio curto (1-2 frases) sobre qual mark e \
+encoding usar e por quê. Serve para melhorar a qualidade da spec. \
+Escreva antes da spec.
+- "spec": string JSON com a especificação Vega-Lite (mark + encoding \
++ title). Sem "data", sem "$schema".
+
 Exemplos de especificação para cada tipo de mark:
 
 Bar horizontal (1 dimensão + 1 métrica):
@@ -237,6 +252,12 @@ Line (1 temporal + 1 métrica):
 {"mark": {"type": "line"}, "encoding": {"x": {"field": "time", \
 "type": "temporal"}, "y": {"field": "total", \
 "type": "quantitative"}}, "title": "Volume ao longo do tempo"}
+
+Line com séries (1 temporal + 1 categórica + 1 métrica):
+{"mark": {"type": "line"}, "encoding": {"x": {"field": "hora", \
+"type": "temporal"}, "y": {"field": "total", \
+"type": "quantitative"}, "color": {"field": "location", \
+"type": "nominal"}}, "title": "Volume por bairro ao longo do tempo"}
 
 Point / dispersão (2 numéricas):
 {"mark": {"type": "point"}, "encoding": {"x": {"field": "metrica_a", \
@@ -251,7 +272,8 @@ Rect / heatmap (2 dimensões + 1 métrica):
 
 
 class ChartSpec(BaseModel):
-    spec: dict | None = None
+    explanation: str = ""
+    spec: str | None = None
 
 
 def _chart_messages(sql: str, explanation: str, rows: list[dict]) -> list:
@@ -274,13 +296,27 @@ def _chart_llm() -> Any:
     return get_llm().with_structured_output(ChartSpec, method="json_schema")
 
 
+def _parse_spec(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return None
+        if not parsed.get("encoding") and not parsed.get("layer"):
+            return None
+        return parsed
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def generate_chart(
     sql: str, explanation: str, rows: list[dict],
 ) -> dict | None:
     if not ANTHROPIC_API_KEY or not rows:
         return None
     result = _chart_llm().invoke(_chart_messages(sql, explanation, rows))
-    return result.spec  # type: ignore[union-attr]
+    return _parse_spec(result.spec)  # type: ignore[union-attr]
 
 
 def generate_charts_batch(
@@ -299,7 +335,7 @@ def generate_charts_batch(
     raw = _chart_llm().batch(messages)
     specs: list[dict | None] = [None] * len(items)
     for (i, _, _, _), result in zip(eligible, raw):
-        specs[i] = result.spec if result else None
+        specs[i] = _parse_spec(result.spec) if result else None
     return specs
 
 
@@ -355,27 +391,14 @@ def run(
         except Exception:
             logger.exception("batch chart generation failed")
             charts = [None] * len(executed)
-        new_ids: list[uuid.UUID] = []
         for (q, clean), chart in zip(executed, charts):
-            item = shoebox_service.add_item(
+            shoebox_service.add_item(
                 db, workspace_id, q.sql, q.explanation,
                 clean, ai_authored=True, chart_spec=chart,
             )
-            new_ids.append(item.id)
-        if new_ids and ANTHROPIC_API_KEY:
-            read_and_extract.fire(workspace_id, shoebox_ids=new_ids)
     except Exception:
         logger.exception(
             "search_and_query failed for workspace %s", workspace_id
         )
     finally:
         db.close()
-
-
-def fire(workspace_id: uuid.UUID, schematization_data: dict) -> None:
-    thread = threading.Thread(
-        target=run,
-        args=(workspace_id, schematization_data),
-        daemon=True,
-    )
-    thread.start()

@@ -49,8 +49,8 @@ interface DropIndicator {
           <h2>
             Resultados
             <button class="ai-search-btn"
-                    [class.ai-search-cooking]="shoeboxCooking"
-                    [disabled]="shoeboxCooking"
+                    [class.ai-search-cooking]="aiSearchRunning"
+                    [disabled]="aiSearchRunning"
                     (click)="triggerAiSearch()"
                     title="Busca IA">
               <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
@@ -59,7 +59,7 @@ interface DropIndicator {
               </svg>
             </button>
           </h2>
-          @if (shoeboxCooking) {
+          @if (aiSearchRunning) {
             <div class="ai-shimmer"></div>
           }
           <div class="column-body">
@@ -125,8 +125,8 @@ interface DropIndicator {
           <h2>
             Evidências
             <button class="ai-search-btn"
-                    [class.ai-search-cooking]="evidenceCooking"
-                    [disabled]="evidenceCooking || shoeboxItems.length === 0"
+                    [class.ai-search-cooking]="aiExtractRunning"
+                    [disabled]="aiExtractRunning || shoeboxItems.length === 0"
                     (click)="triggerAiExtract()"
                     title="Extrair evidências IA">
               <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
@@ -135,7 +135,7 @@ interface DropIndicator {
               </svg>
             </button>
           </h2>
-          @if (evidenceCooking) {
+          @if (aiExtractRunning) {
             <div class="ai-shimmer"></div>
           }
           <div class="column-body">
@@ -202,8 +202,8 @@ interface DropIndicator {
           <h2>
             Esquematização
             <button class="ai-search-btn"
-                    [class.ai-search-cooking]="schemaCooking"
-                    [disabled]="schemaCooking || evidenceItems.length === 0 || knownSuggestionIds.size >= 5"
+                    [class.ai-search-cooking]="aiBuildCaseRunning"
+                    [disabled]="aiBuildCaseRunning || evidenceItems.length === 0 || knownSuggestionIds.size >= 5"
                     (click)="triggerAiBuildCase()"
                     title="Sugerir esquematização IA">
               <svg class="sparkle-icon" width="14" height="14" viewBox="0 0 24 24"
@@ -212,7 +212,7 @@ interface DropIndicator {
               </svg>
             </button>
           </h2>
-          @if (schemaCooking) {
+          @if (aiBuildCaseRunning) {
             <div class="ai-shimmer"></div>
           }
           <div class="column-body schema-drop-zone" data-node-id="root">
@@ -289,8 +289,8 @@ interface DropIndicator {
                              (keydown.enter)="$any($event.target).blur()"
                              #frameTitleInput />
                     } @else {
-                      <span class="frame-title" (click)="startEditingFrame(node.id)">
-                        {{ node.title || 'Nova Hipótese' }}
+                      <span class="frame-title" [class.frame-title-empty]="!node.title" (click)="startEditingFrame(node.id)">
+                        {{ node.title || 'Adicione um título...' }}
                         <svg class="pen-icon" width="10" height="10" viewBox="0 0 24 24" fill="none"
                              stroke="currentColor" stroke-width="2"
                              stroke-linecap="round" stroke-linejoin="round">
@@ -773,6 +773,12 @@ interface DropIndicator {
 
     .frame-description:hover .pen-icon {
       opacity: 0.7;
+    }
+
+    .frame-title-empty {
+      font-style: italic;
+      font-weight: 400;
+      opacity: 0.6;
     }
 
     .frame-description-empty {
@@ -1747,23 +1753,19 @@ export class Workbench implements OnInit, OnDestroy {
 
   newShoeboxIds = new Set<string>();
   unseenShoeboxIds = new Set<string>();
-  shoeboxCooking = false;
+  aiSearchRunning = false;
+  aiExtractRunning = false;
+  aiBuildCaseRunning = false;
   private knownShoeboxIds = new Set<string>();
   private shoeboxInitialLoad = true;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private shoeboxCookingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   newEvidenceIds = new Set<string>();
   unseenEvidenceIds = new Set<string>();
-  evidenceCooking = false;
   private knownEvidenceIds = new Set<string>();
   private evidenceInitialLoad = true;
-  private evidenceCookingTimeout: ReturnType<typeof setTimeout> | null = null;
-  private aiDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  schemaCooking = false;
   knownSuggestionIds = new Set<string>();
-  private schemaCookingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private route: ActivatedRoute,
@@ -1778,25 +1780,13 @@ export class Workbench implements OnInit, OnDestroy {
     this.loadShoebox();
     this.loadEvidence();
     this.loadSchematization();
-    this.pollTimer = setInterval(() => this.pollAll(), 5000);
+    this.pollTimer = setInterval(() => this.pollAll(), 1000);
   }
 
   ngOnDestroy(): void {
     if (this.pollTimer !== null) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
-    }
-    if (this.shoeboxCookingTimeout !== null) {
-      clearTimeout(this.shoeboxCookingTimeout);
-      this.shoeboxCookingTimeout = null;
-    }
-    if (this.evidenceCookingTimeout !== null) {
-      clearTimeout(this.evidenceCookingTimeout);
-      this.evidenceCookingTimeout = null;
-    }
-    if (this.schemaCookingTimeout !== null) {
-      clearTimeout(this.schemaCookingTimeout);
-      this.schemaCookingTimeout = null;
     }
     this.clearVerifyTimer();
   }
@@ -1855,6 +1845,10 @@ export class Workbench implements OnInit, OnDestroy {
       const enc = spec['encoding'] || {};
       const trailEnc = { x: enc['x'], y: enc['y'] } as Record<string, any>;
       const pointEnc = { x: enc['x'], y: enc['y'] } as Record<string, any>;
+      if (enc['color']) {
+        trailEnc['color'] = enc['color'];
+        pointEnc['color'] = enc['color'];
+      }
       if (opacityEnc) {
         trailEnc['opacity'] = { value: 0.3 };
         pointEnc['opacity'] = opacityEnc;
@@ -1864,11 +1858,8 @@ export class Workbench implements OnInit, OnDestroy {
         { mark: { type: 'point', size: 80, filled: true, cursor: 'pointer' }, encoding: pointEnc },
       ];
     } else {
-      const { params: _dropped, ...specNoParams } = spec;
-      base['mark'] = typeof specNoParams['mark'] === 'string'
-        ? { type: specNoParams['mark'], cursor: 'pointer' }
-        : { ...specNoParams['mark'], cursor: 'pointer' };
-      const enc = { ...(specNoParams['encoding'] || {}) };
+      base['mark'] = spec['mark'];
+      const enc = { ...(spec['encoding'] || {}) };
       if (opacityEnc) {
         enc['opacity'] = opacityEnc;
       }
@@ -1940,55 +1931,18 @@ export class Workbench implements OnInit, OnDestroy {
   }
 
   triggerAiSearch(): void {
-    this.schemaSvc.triggerAiSearch(this.workspaceId).subscribe(() => {
-      this.startShoeboxCooking();
-    });
+    this.schemaSvc.triggerAiSearch(this.workspaceId).subscribe();
   }
 
   triggerAiExtract(): void {
     if (this.shoeboxItems.length === 0) return;
-    this.schemaSvc.triggerAiExtract(this.workspaceId).subscribe(() => {
-      this.startEvidenceCooking();
-    });
+    this.schemaSvc.triggerAiExtract(this.workspaceId).subscribe();
   }
 
   triggerAiBuildCase(): void {
     if (this.evidenceItems.length === 0) return;
     if (this.knownSuggestionIds.size >= 5) return;
-    this.schemaSvc.triggerAiBuildCase(this.workspaceId).subscribe(() => {
-      this.startSchemaCooking();
-    });
-  }
-
-  private scheduleAiFire(schemaData: SchematizationData): void {
-    if (schemaData.length === 0) {
-      this.stopShoeboxCooking();
-      this.stopEvidenceCooking();
-      this.stopSchemaCooking();
-      return;
-    }
-    const canSuggest = this.evidenceItems.length > 0
-      && this.knownSuggestionIds.size < 5;
-    this.startShoeboxCooking();
-    if (this.shoeboxItems.length > 0) {
-      this.startEvidenceCooking();
-    }
-    if (canSuggest) {
-      this.startSchemaCooking();
-    }
-    if (this.aiDebounceTimeout !== null) {
-      clearTimeout(this.aiDebounceTimeout);
-    }
-    this.aiDebounceTimeout = setTimeout(() => {
-      this.aiDebounceTimeout = null;
-      this.schemaSvc.triggerAiSearch(this.workspaceId).subscribe();
-      if (this.shoeboxItems.length > 0) {
-        this.schemaSvc.triggerAiExtract(this.workspaceId).subscribe();
-      }
-      if (canSuggest) {
-        this.schemaSvc.triggerAiBuildCase(this.workspaceId).subscribe();
-      }
-    }, 3000);
+    this.schemaSvc.triggerAiBuildCase(this.workspaceId).subscribe();
   }
 
   loadShoebox(): void {
@@ -2010,8 +1964,6 @@ export class Workbench implements OnInit, OnDestroy {
       this.knownShoeboxIds = new Set(items.map((i) => i.id));
       this.resortShoebox();
       if (freshAiIds.length > 0) {
-        this.stopShoeboxCooking();
-        this.startEvidenceCooking();
         for (const id of freshAiIds) {
           this.newShoeboxIds.add(id);
           this.unseenShoeboxIds.add(id);
@@ -2095,7 +2047,6 @@ export class Workbench implements OnInit, OnDestroy {
       this.knownEvidenceIds = new Set(items.map((i) => i.id));
       this.updateFilteredEvidence();
       if (freshAiIds.length > 0) {
-        this.stopEvidenceCooking();
         for (const id of freshAiIds) {
           this.newEvidenceIds.add(id);
           this.unseenEvidenceIds.add(id);
@@ -2211,7 +2162,7 @@ export class Workbench implements OnInit, OnDestroy {
   }
 
   isCancelled(node: ResolvedNode): boolean {
-    return node.children.some(c => c.rel === 'cancel' && !this.isCancelled(c));
+    return node.children.some(c => c.rel === 'cancel' && !c.suggestion && !this.isCancelled(c));
   }
 
   relIcon(rel: RelType): string {
@@ -2243,7 +2194,6 @@ export class Workbench implements OnInit, OnDestroy {
     ).subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
-      this.scheduleAiFire(resp.data);
     });
   }
 
@@ -2405,7 +2355,6 @@ export class Workbench implements OnInit, OnDestroy {
       this.schemaSvc.moveNode(this.workspaceId, schemaNodeId, parentId, index).subscribe((resp) => {
         this.schemaData = resp.data;
         this.updateFilteredEvidence();
-        this.scheduleAiFire(resp.data);
       });
       return;
     }
@@ -2426,7 +2375,6 @@ export class Workbench implements OnInit, OnDestroy {
     this.schemaSvc.addEvidence(this.workspaceId, evidenceId, parentId, index).subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
-      this.scheduleAiFire(resp.data);
     });
   }
 
@@ -2436,21 +2384,23 @@ export class Workbench implements OnInit, OnDestroy {
       this.schemaSvc.removeFrame(this.workspaceId, node.id).subscribe((resp) => {
         this.schemaData = resp.data;
         this.updateFilteredEvidence();
-        this.scheduleAiFire(resp.data);
       });
     } else {
       this.schemaSvc.removeEvidence(this.workspaceId, node.id).subscribe((resp) => {
         this.schemaData = resp.data;
         this.updateFilteredEvidence();
-        this.scheduleAiFire(resp.data);
       });
     }
   }
 
   createNewFrame(): void {
-    this.schemaSvc.createFrame(this.workspaceId, 'Nova Hipótese').subscribe((resp) => {
+    this.schemaSvc.createFrame(this.workspaceId, '').subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
+      const newFrame = resp.data[resp.data.length - 1];
+      if (newFrame?.type === 'frame') {
+        this.startEditingFrame(newFrame.id);
+      }
     });
   }
 
@@ -2465,12 +2415,11 @@ export class Workbench implements OnInit, OnDestroy {
 
   saveFrameTitle(event: Event, frameId: string): void {
     const input = event.target as HTMLInputElement;
-    const title = input.value.trim() || 'Nova Hipótese';
+    const title = input.value.trim();
     this.editingFrameId = null;
     this.schemaSvc.updateFrame(this.workspaceId, frameId, title).subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
-      this.scheduleAiFire(resp.data);
     });
   }
 
@@ -2492,65 +2441,7 @@ export class Workbench implements OnInit, OnDestroy {
     this.schemaSvc.updateFrame(this.workspaceId, frameId, undefined, description).subscribe((resp) => {
       this.schemaData = resp.data;
       this.updateFilteredEvidence();
-      this.scheduleAiFire(resp.data);
     });
-  }
-
-  private startShoeboxCooking(): void {
-    this.shoeboxCooking = true;
-    if (this.shoeboxCookingTimeout !== null) {
-      clearTimeout(this.shoeboxCookingTimeout);
-    }
-    this.shoeboxCookingTimeout = setTimeout(() => {
-      this.shoeboxCooking = false;
-      this.shoeboxCookingTimeout = null;
-    }, 30000);
-  }
-
-  private stopShoeboxCooking(): void {
-    this.shoeboxCooking = false;
-    if (this.shoeboxCookingTimeout !== null) {
-      clearTimeout(this.shoeboxCookingTimeout);
-      this.shoeboxCookingTimeout = null;
-    }
-  }
-
-  private startEvidenceCooking(): void {
-    this.evidenceCooking = true;
-    if (this.evidenceCookingTimeout !== null) {
-      clearTimeout(this.evidenceCookingTimeout);
-    }
-    this.evidenceCookingTimeout = setTimeout(() => {
-      this.evidenceCooking = false;
-      this.evidenceCookingTimeout = null;
-    }, 30000);
-  }
-
-  private stopEvidenceCooking(): void {
-    this.evidenceCooking = false;
-    if (this.evidenceCookingTimeout !== null) {
-      clearTimeout(this.evidenceCookingTimeout);
-      this.evidenceCookingTimeout = null;
-    }
-  }
-
-  private startSchemaCooking(): void {
-    this.schemaCooking = true;
-    if (this.schemaCookingTimeout !== null) {
-      clearTimeout(this.schemaCookingTimeout);
-    }
-    this.schemaCookingTimeout = setTimeout(() => {
-      this.schemaCooking = false;
-      this.schemaCookingTimeout = null;
-    }, 30000);
-  }
-
-  private stopSchemaCooking(): void {
-    this.schemaCooking = false;
-    if (this.schemaCookingTimeout !== null) {
-      clearTimeout(this.schemaCookingTimeout);
-      this.schemaCookingTimeout = null;
-    }
   }
 
   private collectSuggestionIds(nodes: SchemaNode[]): Set<string> {
@@ -2570,6 +2461,10 @@ export class Workbench implements OnInit, OnDestroy {
 
   private pollAll(): void {
     this.schemaSvc.poll(this.workspaceId).subscribe((resp) => {
+      this.aiSearchRunning = resp.ai_search_running;
+      this.aiExtractRunning = resp.ai_extract_running;
+      this.aiBuildCaseRunning = resp.ai_build_case_running;
+
       // shoebox
       if (this.shoeboxInitialLoad) {
         this.shoeboxItems = resp.shoebox;
@@ -2585,8 +2480,6 @@ export class Workbench implements OnInit, OnDestroy {
         this.shoeboxItems = resp.shoebox;
         this.knownShoeboxIds = new Set(resp.shoebox.map((i) => i.id));
         if (freshShoeboxAiIds.length > 0) {
-          this.stopShoeboxCooking();
-          this.startEvidenceCooking();
           for (const id of freshShoeboxAiIds) {
             this.newShoeboxIds.add(id);
             this.unseenShoeboxIds.add(id);
@@ -2617,7 +2510,6 @@ export class Workbench implements OnInit, OnDestroy {
         this.evidenceItems = resp.evidence;
         this.knownEvidenceIds = new Set(resp.evidence.map((i) => i.id));
         if (freshEvidenceAiIds.length > 0) {
-          this.stopEvidenceCooking();
           for (const id of freshEvidenceAiIds) {
             this.newEvidenceIds.add(id);
             this.unseenEvidenceIds.add(id);
@@ -2635,19 +2527,8 @@ export class Workbench implements OnInit, OnDestroy {
 
       // schematization
       if (!this.editingFrameId && !this.editingDescId) {
-        const newSuggestionIds = this.collectSuggestionIds(resp.schematization.data);
-        let hasNewSuggestion = false;
-        for (const id of newSuggestionIds) {
-          if (!this.knownSuggestionIds.has(id)) {
-            hasNewSuggestion = true;
-            break;
-          }
-        }
-        this.knownSuggestionIds = newSuggestionIds;
+        this.knownSuggestionIds = this.collectSuggestionIds(resp.schematization.data);
         this.schemaData = resp.schematization.data;
-        if (hasNewSuggestion) {
-          this.stopSchemaCooking();
-        }
       }
 
       this.updateFilteredEvidence();
@@ -2709,13 +2590,11 @@ export class Workbench implements OnInit, OnDestroy {
         this.schemaSvc.approveSuggestion(this.workspaceId, suggestionNodeId).subscribe((resp) => {
           this.schemaData = resp.data;
           this.updateFilteredEvidence();
-          this.scheduleAiFire(resp.data);
         });
       } else if (drop) {
         this.schemaSvc.addEvidence(this.workspaceId, drop.evidenceId, drop.parentId, drop.index).subscribe((resp) => {
           this.schemaData = resp.data;
           this.updateFilteredEvidence();
-          this.scheduleAiFire(resp.data);
         });
       }
       this.closeEvidenceDetail();
@@ -2764,14 +2643,12 @@ export class Workbench implements OnInit, OnDestroy {
           this.schemaSvc.approveSuggestion(this.workspaceId, suggestionNodeId).subscribe((resp) => {
             this.schemaData = resp.data;
             this.updateFilteredEvidence();
-            this.scheduleAiFire(resp.data);
-          });
+            });
         } else if (drop) {
           this.schemaSvc.addEvidence(this.workspaceId, drop.evidenceId, drop.parentId, drop.index).subscribe((resp) => {
             this.schemaData = resp.data;
             this.updateFilteredEvidence();
-            this.scheduleAiFire(resp.data);
-          });
+            });
         }
         this.closeEvidenceDetail();
         this.loadEvidence();

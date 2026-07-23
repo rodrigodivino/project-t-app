@@ -5,11 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.ai import read_and_extract
+from app.ai.orchestrator import force_extract
 from app.ai.search_and_query import generate_chart
 from app.auth.dependency import require_auth
 from app.database import get_db
-from app.settings import ANTHROPIC_API_KEY
 from app.shoebox.service import add_item, get_item, list_items, remove_item
 
 router = APIRouter(
@@ -59,8 +58,7 @@ def add(
     ws_id: uuid.UUID, body: ShoeboxAddRequest, db: Session = Depends(get_db)
 ) -> ShoeboxItemFull:
     item = add_item(db, ws_id, body.query, body.explanation, body.result, chart_spec=body.chart_spec)
-    if ANTHROPIC_API_KEY:
-        read_and_extract.fire(ws_id, shoebox_ids=[item.id])
+    force_extract(db, ws_id)
     return ShoeboxItemFull.model_validate(item)
 
 

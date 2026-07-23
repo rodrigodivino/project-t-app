@@ -1,4 +1,3 @@
-import time
 import uuid
 
 from app.ai.read_and_extract import (
@@ -6,7 +5,6 @@ from app.ai.read_and_extract import (
     Snippet,
     build_messages,
     build_prompt,
-    fire,
     run,
 )
 
@@ -55,85 +53,103 @@ class FakeSession:
 
 
 def test_build_prompt_contains_schematization():
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], {"query": "SELECT 1", "explanation": "x", "result": []})
+    items = [{"id": "abc", "query": "SELECT 1", "explanation": "x", "result": []}]
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], items)
     assert "ev-1" in prompt
 
 
 def test_build_prompt_empty_evidence_message():
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], {"query": "SELECT 1", "explanation": "x", "result": []})
+    items = [{"id": "abc", "query": "SELECT 1", "explanation": "x", "result": []}]
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], items)
     assert "vazios" in prompt.lower()
 
 
 def test_build_prompt_includes_existing_evidence():
     titles = ["Bairro X teve 100 postagens", "Conta Y postou 50 vezes"]
-    prompt = build_prompt(
-        SAMPLE_SCHEMA_TEXT, titles,
-        {"query": "SELECT 1", "explanation": "x", "result": []},
-    )
+    items = [{"id": "abc", "query": "SELECT 1", "explanation": "x", "result": []}]
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, titles, items)
     assert "Bairro X teve 100 postagens" in prompt
     assert "Conta Y postou 50 vezes" in prompt
     assert "evite duplicar" in prompt.lower()
 
 
-def test_build_prompt_includes_shoebox_item():
-    item = {"query": "SELECT COUNT(*) FROM t", "explanation": "Contagem total", "result": [{"count": 42}]}
-    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], item)
+def test_build_prompt_includes_shoebox_items():
+    items = [
+        {"id": "s1", "query": "SELECT COUNT(*) FROM t", "explanation": "Contagem total",
+         "result": [{"count": 42}]},
+    ]
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], items)
     assert "SELECT COUNT(*)" in prompt
     assert "Contagem total" in prompt
     assert "42" in prompt
+    assert "[s1]" in prompt
+
+
+def test_build_prompt_multiple_items():
+    items = [
+        {"id": "s1", "query": "Q1", "explanation": "E1", "result": []},
+        {"id": "s2", "query": "Q2", "explanation": "E2", "result": []},
+    ]
+    prompt = build_prompt(SAMPLE_SCHEMA_TEXT, [], items)
+    assert "[s1]" in prompt
+    assert "[s2]" in prompt
+    assert "Q1" in prompt
+    assert "Q2" in prompt
 
 
 def test_build_messages_returns_two_messages():
-    msgs = build_messages(SAMPLE_SCHEMA_TEXT, [], {"query": "Q", "explanation": "E", "result": []})
+    items = [{"id": "abc", "query": "Q", "explanation": "E", "result": []}]
+    msgs = build_messages(SAMPLE_SCHEMA_TEXT, [], items)
     assert len(msgs) == 2
 
 
-def fake_llm_batch(inputs: list[list]) -> list[ExtractionResult]:
-    return [
-        ExtractionResult(snippets=[
-            Snippet(content="Observação factual do item", rows=[0]),
-        ])
-        for _ in inputs
-    ]
+def fake_llm(messages: list) -> ExtractionResult:
+    return ExtractionResult(snippets=[
+        Snippet(shoebox_id="PLACEHOLDER", content="Observação factual do item", rows=[0]),
+    ])
 
 
 def test_run_creates_evidence_items():
     session = FakeSession()
     ws_id = uuid.uuid4()
-    items = [FakeShoeboxItem(), FakeShoeboxItem()]
+    item = FakeShoeboxItem()
+
+    def llm_with_id(messages):
+        return ExtractionResult(snippets=[
+            Snippet(shoebox_id=str(item.id), content="Observação factual", rows=[0]),
+        ])
+
     run(
         ws_id,
-        llm_caller=fake_llm_batch,
+        llm_caller=llm_with_id,
         session_factory=lambda: session,
         schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
-        shoebox_loader=lambda db, ws: items,
-        shoebox_getter=lambda db, sid: None,
+        shoebox_loader=lambda db, ws: [item],
         evidence_loader=lambda db, ws: [],
     )
     assert session.closed
-    assert len(session.added) == 2
-    item = session.added[0]
-    assert item.workspace_id == ws_id
-    assert item.content == "Observação factual do item"
-    assert item.rows == [0]
-    assert item.ai_authored is True
+    assert len(session.added) == 1
+    added = session.added[0]
+    assert added.workspace_id == ws_id
+    assert added.content == "Observação factual"
+    assert added.rows == [0]
+    assert added.ai_authored is True
 
 
-def test_run_skips_empty_schematization():
+def test_run_skips_empty_shoebox():
     session = FakeSession()
     called = {"llm": False}
 
-    def tracking_llm(inputs):
+    def tracking_llm(messages):
         called["llm"] = True
-        return []
+        return ExtractionResult(snippets=[])
 
     run(
         uuid.uuid4(),
         llm_caller=tracking_llm,
         session_factory=lambda: session,
-        schema_loader=lambda db, ws: EMPTY_SCHEMA_TREE,
+        schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: [],
-        shoebox_getter=lambda db, sid: None,
         evidence_loader=lambda db, ws: [],
     )
     assert not called["llm"]
@@ -143,8 +159,8 @@ def test_run_skips_empty_schematization():
 def test_run_handles_empty_extraction():
     session = FakeSession()
 
-    def empty_llm(inputs):
-        return [ExtractionResult(snippets=[]) for _ in inputs]
+    def empty_llm(messages):
+        return ExtractionResult(snippets=[])
 
     run(
         uuid.uuid4(),
@@ -152,43 +168,39 @@ def test_run_handles_empty_extraction():
         session_factory=lambda: session,
         schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: [FakeShoeboxItem()],
-        shoebox_getter=lambda db, sid: None,
         evidence_loader=lambda db, ws: [],
     )
     assert len(session.added) == 0
     assert session.closed
 
 
-def test_run_processes_specific_ids():
+def test_run_skips_unknown_shoebox_id():
     session = FakeSession()
-    item_a = FakeShoeboxItem(sid=uuid.uuid4())
-    item_b = FakeShoeboxItem(sid=uuid.uuid4())
-    all_items = [item_a, item_b]
 
-    def getter(db, sid):
-        return next((i for i in all_items if i.id == sid), None)
+    def bad_id_llm(messages):
+        return ExtractionResult(snippets=[
+            Snippet(shoebox_id="nonexistent", content="fact", rows=[0]),
+        ])
 
     run(
         uuid.uuid4(),
-        shoebox_ids=[item_a.id],
-        llm_caller=fake_llm_batch,
+        llm_caller=bad_id_llm,
         session_factory=lambda: session,
         schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
-        shoebox_loader=lambda db, ws: all_items,
-        shoebox_getter=getter,
+        shoebox_loader=lambda db, ws: [FakeShoeboxItem()],
         evidence_loader=lambda db, ws: [],
     )
-    assert len(session.added) == 1
+    assert len(session.added) == 0
     assert session.closed
 
 
 def test_run_passes_evidence_titles_to_llm():
     session = FakeSession()
-    received_inputs = []
+    received_messages = []
 
-    def capturing_llm(inputs):
-        received_inputs.extend(inputs)
-        return [ExtractionResult(snippets=[]) for _ in inputs]
+    def capturing_llm(messages):
+        received_messages.extend(messages)
+        return ExtractionResult(snippets=[])
 
     run(
         uuid.uuid4(),
@@ -196,43 +208,38 @@ def test_run_passes_evidence_titles_to_llm():
         session_factory=lambda: session,
         schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
         shoebox_loader=lambda db, ws: [FakeShoeboxItem()],
-        shoebox_getter=lambda db, sid: None,
         evidence_loader=lambda db, ws: [FakeEvidenceItem("Existing snippet")],
     )
-    prompt_text = received_inputs[0][1].content
+    prompt_text = received_messages[1].content
     assert "Existing snippet" in prompt_text
 
 
 def test_run_continues_on_snippet_failure():
     session = FakeSession()
+    item = FakeShoeboxItem(result=[{"a": 1}, {"a": 2}])
     call_count = {"n": 0}
-
     original_add = session.add
 
-    def failing_add(item):
+    def failing_add(added_item):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("simulated DB error")
-        original_add(item)
+        original_add(added_item)
 
     session.add = failing_add
 
-    def multi_snippet_llm(inputs):
-        return [
-            ExtractionResult(snippets=[
-                Snippet(content="First", rows=[0]),
-                Snippet(content="Second", rows=[1]),
-            ])
-            for _ in inputs
-        ]
+    def multi_snippet_llm(messages):
+        return ExtractionResult(snippets=[
+            Snippet(shoebox_id=str(item.id), content="First", rows=[0]),
+            Snippet(shoebox_id=str(item.id), content="Second", rows=[1]),
+        ])
 
     run(
         uuid.uuid4(),
         llm_caller=multi_snippet_llm,
         session_factory=lambda: session,
         schema_loader=lambda db, ws: SAMPLE_SCHEMA_TREE,
-        shoebox_loader=lambda db, ws: [FakeShoeboxItem(result=[{"a": 1}, {"a": 2}])],
-        shoebox_getter=lambda db, sid: None,
+        shoebox_loader=lambda db, ws: [item],
         evidence_loader=lambda db, ws: [],
     )
     assert len(session.added) == 1
@@ -250,17 +257,8 @@ def test_prompt_includes_balance_annotation():
     tree = _normalize_data(schema_tree)
     evidence_map = {"ev-1": "fact one"}
     schema_context = serialize_for_llm(tree, evidence_map)
-    prompt = build_prompt(
-        schema_context, [],
-        {"query": "SELECT 1", "explanation": "x", "result": []},
-    )
+    items = [{"id": "abc", "query": "SELECT 1", "explanation": "x", "result": []}]
+    prompt = build_prompt(schema_context, [], items)
     assert "Cobertura:" in prompt
     assert "1× elabora" in prompt
     assert "0× questiona" in prompt
-
-
-def test_fire_returns_immediately():
-    start = time.monotonic()
-    fire(uuid.uuid4())
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.2

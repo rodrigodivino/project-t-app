@@ -6,6 +6,7 @@ from app.schematization.service import (
     _count_children_by_rel,
     _find_and_remove,
     _find_node,
+    _is_empty_frame,
     _normalize_data,
     add_evidence,
     approve_suggestion,
@@ -15,6 +16,7 @@ from app.schematization.service import (
     remove_evidence,
     remove_node,
     serialize_for_llm,
+    strip_empty_frames,
     update_frame,
 )
 
@@ -455,3 +457,96 @@ def test_serialize_for_llm_excludes_suggestions():
     assert "loose fact" in result
     assert "suggested fact" not in result
     assert "suggested loose" not in result
+
+
+def test_add_evidence_rejects_suggestion_parent():
+    db = MagicMock()
+    ws_id = uuid.uuid4()
+    ev_id = uuid.uuid4()
+    sug_id = str(uuid.uuid4())
+    existing = MagicMock()
+    existing.data = [
+        {"type": "frame", "id": str(uuid.uuid4()), "title": "H", "children": [
+            {"type": "evidence", "id": sug_id, "rel": "elaborate", "suggestion": True},
+        ]},
+    ]
+    db.get.return_value = existing
+    try:
+        add_evidence(db, ws_id, ev_id, parent_id=uuid.UUID(sug_id))
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "suggestion" in str(e).lower()
+
+
+def test_move_node_rejects_suggestion_as_target_parent():
+    db = MagicMock()
+    ws_id = uuid.uuid4()
+    eid = str(uuid.uuid4())
+    sug_id = str(uuid.uuid4())
+    existing = MagicMock()
+    existing.data = [
+        {"type": "evidence", "id": eid},
+        {"type": "frame", "id": str(uuid.uuid4()), "title": "H", "children": [
+            {"type": "evidence", "id": sug_id, "rel": "elaborate", "suggestion": True},
+        ]},
+    ]
+    db.get.return_value = existing
+    try:
+        move_node(db, ws_id, uuid.UUID(eid), parent_id=uuid.UUID(sug_id))
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "suggestion" in str(e).lower()
+
+
+def test_is_empty_frame_true():
+    node = {"type": "frame", "id": "f1", "title": "", "description": "", "children": []}
+    assert _is_empty_frame(node) is True
+
+
+def test_is_empty_frame_false_with_title():
+    node = {"type": "frame", "id": "f1", "title": "H1", "description": "", "children": []}
+    assert _is_empty_frame(node) is False
+
+
+def test_is_empty_frame_false_with_description():
+    node = {"type": "frame", "id": "f1", "title": "", "description": "d", "children": []}
+    assert _is_empty_frame(node) is False
+
+
+def test_is_empty_frame_false_with_children():
+    node = {
+        "type": "frame", "id": "f1", "title": "", "description": "",
+        "children": [{"type": "evidence", "id": "e1", "rel": "elaborate"}],
+    }
+    assert _is_empty_frame(node) is False
+
+
+def test_is_empty_frame_false_for_evidence():
+    node = {"type": "evidence", "id": "e1"}
+    assert _is_empty_frame(node) is False
+
+
+def test_strip_empty_frames():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "", "description": "", "children": []},
+        {"type": "frame", "id": "f2", "title": "H", "description": "", "children": []},
+        {"type": "evidence", "id": "e1"},
+    ]
+    result = strip_empty_frames(tree)
+    assert len(result) == 2
+    assert result[0]["id"] == "f2"
+    assert result[1]["id"] == "e1"
+
+
+def test_serialize_for_llm_skips_empty_frames():
+    tree = [
+        {"type": "frame", "id": "f1", "title": "", "description": "", "children": []},
+        {"type": "frame", "id": "f2", "title": "H1", "description": "desc", "children": [
+            {"type": "evidence", "id": "e1", "rel": "elaborate"},
+        ]},
+    ]
+    evidence_map = {"e1": "fact one"}
+    result = serialize_for_llm(tree, evidence_map)
+    assert "H1" in result
+    assert "fact one" in result
+    assert "Adicione" not in result

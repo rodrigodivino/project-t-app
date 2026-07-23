@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.ai.orchestrator import check_and_trigger, running_pipelines
 from app.auth.dependency import require_auth
 from app.database import get_db
 from app.evidence.service import list_items as list_evidence
@@ -91,12 +92,20 @@ class WorkspacePollResponse(BaseModel):
     shoebox: list[PollShoeboxItem]
     evidence: list[PollEvidenceItem]
     schematization: PollSchematization
+    ai_search_running: bool
+    ai_extract_running: bool
+    ai_build_case_running: bool
 
 
 @router.get("/{ws_id}/poll", response_model=WorkspacePollResponse)
 def poll(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> WorkspacePollResponse:
+    check_and_trigger(db, ws_id)
+    status = running_pipelines(ws_id)
     return WorkspacePollResponse(
         shoebox=[PollShoeboxItem.model_validate(i) for i in list_shoebox(db, ws_id)],
         evidence=[PollEvidenceItem.model_validate(i) for i in list_evidence(db, ws_id)],
         schematization=PollSchematization.model_validate(get_schematization(db, ws_id)),
+        ai_search_running=status["search"],
+        ai_extract_running=status["extract"],
+        ai_build_case_running=status["build_case"],
     )

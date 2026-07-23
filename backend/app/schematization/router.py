@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.ai.orchestrator import force_build_case, force_extract, force_search
 from app.auth.dependency import require_auth
 from app.database import get_db
 from app.schematization.service import (
@@ -14,9 +15,6 @@ from app.schematization.service import (
     move_node,
     remove_evidence,
     remove_node,
-    trigger_build_case,
-    trigger_extract,
-    trigger_search,
     update_frame,
 )
 
@@ -153,17 +151,17 @@ def approve_sug(
 
 @router.post("/ai-search", status_code=202)
 def ai_search(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
-    trigger_search(db, ws_id)
-    return {"status": "accepted"}
+    started = force_search(db, ws_id)
+    return {"status": "accepted" if started else "already_running"}
 
 
 @router.post("/ai-extract", status_code=202)
 def ai_extract(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
-    trigger_extract(db, ws_id)
-    return {"status": "accepted"}
+    started = force_extract(db, ws_id)
+    return {"status": "accepted" if started else "already_running"}
 
 
 @router.post("/ai-build-case", status_code=202)
 def ai_build_case(ws_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
-    trigger_build_case(db, ws_id)
-    return {"status": "accepted"}
+    started = force_build_case(db, ws_id)
+    return {"status": "accepted" if started else "already_running"}

@@ -3,9 +3,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.ai import build_case, read_and_extract, search_and_query
 from app.schematization.models import Schematization
-from app import settings
 
 EMPTY_DATA: list = []
 
@@ -120,6 +118,8 @@ def add_evidence(
         parent = _find_node(tree, pid)
         if parent is None:
             raise ValueError(f"Parent node {pid} not found")
+        if parent.get("suggestion"):
+            raise ValueError(f"Cannot add children to suggestion node {pid}")
         children = parent.setdefault("children", [])
         idx = index if index is not None else len(children)
         children.insert(idx, node)
@@ -230,6 +230,8 @@ def move_node(
         target = _find_node(tree, pid)
         if target is None:
             raise ValueError(f"Parent node {pid} not found")
+        if target.get("suggestion"):
+            raise ValueError(f"Cannot add children to suggestion node {pid}")
         moving = _find_node(tree, nid)
         if moving is not None and _is_descendant(moving, pid):
             raise ValueError("Cannot move a node into its own descendant")
@@ -279,34 +281,19 @@ def remove_node(
     return row
 
 
-def trigger_search(db: Session, workspace_id: uuid.UUID) -> None:
-    if not settings.ANTHROPIC_API_KEY:
-        return
-    row = get_or_create(db, workspace_id)
-    search_and_query.fire(workspace_id, row.data)
 
 
-def trigger_extract(db: Session, workspace_id: uuid.UUID) -> None:
-    if not settings.ANTHROPIC_API_KEY:
-        return
-    from app.shoebox import service as shoebox_service
-    if not shoebox_service.list_items(db, workspace_id):
-        return
-    read_and_extract.fire(workspace_id)
+def _is_empty_frame(node: dict) -> bool:
+    return (
+        node.get("type") == "frame"
+        and not node.get("title")
+        and not node.get("description")
+        and not node.get("children")
+    )
 
 
-def trigger_build_case(
-    db: Session,
-    workspace_id: uuid.UUID,
-    evidence_ids: list[uuid.UUID] | None = None,
-) -> None:
-    if not settings.ANTHROPIC_API_KEY:
-        return
-    from app.evidence import service as evidence_service
-    if not evidence_service.list_items(db, workspace_id):
-        return
-    build_case.fire(workspace_id, evidence_ids)
-
+def strip_empty_frames(tree: list) -> list:
+    return [n for n in tree if not _is_empty_frame(n)]
 
 
 REL_LABELS = {
@@ -327,6 +314,8 @@ def serialize_for_llm(tree: list, evidence_map: dict[str, str]) -> str:
     loose: list[str] = []
     for node in tree:
         if node.get("suggestion"):
+            continue
+        if _is_empty_frame(node):
             continue
         if node.get("type") == "frame":
             _serialize_frame(node, lines, evidence_map, indent=0)
