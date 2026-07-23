@@ -1,6 +1,4 @@
 BACKLOG.md
-materials/*
-!materials/post_rede_social_himark.csv
 
 __pycache__/
 *.pyc
